@@ -14,9 +14,11 @@ AegisScope is a Linux-only, scope-enforced web security assessment CLI for websi
 - HTTP/HTTPS scheme restrictions
 - Redirect scope enforcement
 - Request-rate, page, response-size, and total-request limits
-- Same-scope HTML crawling without form submission
+- Same-scope HTML crawling with GET-form inventory and no POST submission
 - DNS addresses and TLS certificate inventory
 - Passive subdomain discovery from certificate names and page links
+- Certificate Transparency discovery with Cert Spotter and crt.sh fallback
+- Safe raw response-header inventory in JSON and Markdown reports
 - Server, framework, version, and low-confidence OS evidence
 - Security header, cookie, mixed-content, and password-form checks
 - Optional input-reflection, SQL-error, and open-redirect indicators
@@ -36,7 +38,7 @@ On Arch Linux and Arch-based distributions:
 ```bash
 sudo pacman -S --needed python python-pipx git
 pipx ensurepath
-pipx install git+https://github.com/spideyanik/aegisscope.git
+pipx install git+https://github.com/OWNER/aegisscope.git
 ```
 
 Start a URL-first assessment:
@@ -55,7 +57,7 @@ Every command launch displays the AegisScope terminal shield and project attribu
 For local development:
 
 ```bash
-git clone https://github.com/spideyanik/aegisscope.git
+git clone https://github.com/OWNER/aegisscope.git
 cd aegisscope
 python -m venv .venv
 . .venv/bin/activate
@@ -95,6 +97,8 @@ Active profiles require the exact interactive authorization confirmation. They n
 
 AegisScope reports observed IP addresses, TLS protocol and certificate metadata, certificate subdomains, linked subdomains, HTTP technology headers, HTML framework markers, and exposed versions. It does not scan a discovered host unless the scope configuration permits it.
 
+Certificate Transparency discovery sends the registrable domain, but no credentials or page content, to Cert Spotter or the crt.sh fallback. Set `"passive_subdomains": false` in the configuration to disable third-party lookups.
+
 An HTTP banner cannot reliably identify the server operating system, patch level, or exploitable CVEs. OS values are therefore labeled as low-confidence hints. Exposed software versions are evidence for manual advisory review, not proof of vulnerability.
 
 ## Finding verification
@@ -105,6 +109,14 @@ An HTTP banner cannot reliably identify the server operating system, patch level
 - `informational`: inventory or diagnostic evidence with no vulnerability claim
 
 AegisScope does not claim to find every vulnerability. Authentication flaws, IDOR, business-logic abuse, stored XSS, and many authorization issues require controlled test accounts and human analysis.
+
+## When no bugs are found
+
+- `passive` reports reconnaissance and directly observed configuration weaknesses; it does not mutate inputs.
+- `injection` requires query parameters or discovered non-password GET forms before it can send safe canaries.
+- `redirect` tests only recognized redirect parameters such as `next`, `url`, and `return`.
+- `full-safe` runs every implemented non-destructive check but still cannot prove the absence of vulnerabilities.
+- Review `report.md` for DNS, TLS, Certificate Transparency, header, and request-error diagnostics.
 
 ## Non-interactive use
 

@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+import tldextract
 
 
 PRODUCT_VERSION = re.compile(
@@ -33,6 +34,21 @@ OS_HINTS = {
     "win32": "Microsoft Windows",
     "windows": "Microsoft Windows",
 }
+SAFE_RESPONSE_HEADERS = (
+    "server",
+    "x-powered-by",
+    "content-type",
+    "content-security-policy",
+    "strict-transport-security",
+    "x-frame-options",
+    "x-content-type-options",
+    "referrer-policy",
+    "permissions-policy",
+    "access-control-allow-origin",
+    "access-control-allow-credentials",
+    "cache-control",
+)
+_TLD_EXTRACT = tldextract.TLDExtract(suffix_list_urls=())
 
 
 def _name_from_x509(parts: tuple[tuple[tuple[str, str], ...], ...]) -> str:
@@ -44,10 +60,80 @@ def _subdomain_base(hostname: str) -> str:
     return hostname[4:] if hostname.startswith("www.") else hostname
 
 
+def registrable_domain(hostname: str) -> str:
+    extracted = _TLD_EXTRACT(hostname.lower().rstrip("."))
+    return extracted.top_domain_under_public_suffix or hostname.lower().rstrip(".")
+
+
 def is_related_subdomain(candidate: str, hostname: str) -> bool:
     candidate = candidate.lower().strip().lstrip("*.").rstrip(".")
     base = _subdomain_base(hostname.lower().rstrip("."))
     return bool(candidate and candidate != base and candidate.endswith(f".{base}"))
+
+
+def parse_ct_entries(entries: object, domain: str) -> list[str]:
+    if not isinstance(entries, list):
+        return []
+    discovered: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        dns_names = entry.get("dns_names")
+        values = (
+            [str(value) for value in dns_names]
+            if isinstance(dns_names, list)
+            else str(entry.get("name_value", "")).splitlines()
+        )
+        for value in values:
+            hostname = value.strip().lower().lstrip("*.").rstrip(".")
+            if hostname and hostname != domain and hostname.endswith(f".{domain}"):
+                discovered.add(hostname)
+    return sorted(discovered)
+
+
+def collect_certificate_transparency(domain: str, timeout: float) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "domain": domain,
+        "subdomains": [],
+        "source": None,
+        "error": None,
+    }
+    errors: list[str] = []
+    try:
+        response = httpx.get(
+            "https://api.certspotter.com/v1/issuances",
+            params={
+                "domain": domain,
+                "include_subdomains": "true",
+                "expand": "dns_names",
+            },
+            headers={"User-Agent": "AegisScope/0.2.1 passive-certificate-discovery"},
+            timeout=timeout,
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        result["subdomains"] = parse_ct_entries(response.json(), domain)[:2_000]
+        result["source"] = "Cert Spotter"
+        return result
+    except (httpx.HTTPError, ValueError) as error:
+        errors.append(f"Cert Spotter: {type(error).__name__}")
+
+    try:
+        response = httpx.get(
+            "https://crt.sh/",
+            params={"q": f"%.{domain}", "output": "json"},
+            headers={"User-Agent": "AegisScope/0.2.1 passive-certificate-discovery"},
+            timeout=max(timeout, 30),
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        result["subdomains"] = parse_ct_entries(response.json(), domain)[:2_000]
+        result["source"] = "crt.sh"
+        return result
+    except (httpx.HTTPError, ValueError) as error:
+        errors.append(f"crt.sh: {type(error).__name__}")
+    result["error"] = "; ".join(errors) or "certificate transparency lookup failed"
+    return result
 
 
 def collect_dns(hostname: str, port: int) -> dict[str, Any]:
@@ -101,10 +187,13 @@ def collect_tls(hostname: str, port: int, timeout: float) -> dict[str, Any]:
     return result
 
 
-def collect_host_recon(url: str, timeout: float) -> dict[str, Any]:
+def collect_host_recon(
+    url: str, timeout: float, passive_subdomains: bool = True
+) -> dict[str, Any]:
     parts = urlsplit(url)
     hostname = parts.hostname or ""
     port = parts.port or (443 if parts.scheme == "https" else 80)
+    domain = registrable_domain(hostname)
     recon: dict[str, Any] = {
         "hostname": hostname,
         "port": port,
@@ -112,9 +201,15 @@ def collect_host_recon(url: str, timeout: float) -> dict[str, Any]:
         "dns": collect_dns(hostname, port),
         "tls": {"enabled": False} if parts.scheme != "https" else collect_tls(hostname, port, timeout),
         "certificate_subdomains": [],
+        "certificate_transparency": {
+            "domain": domain,
+            "subdomains": [],
+            "error": "disabled by configuration",
+        },
         "linked_hosts": [],
         "technologies": [],
         "possible_operating_systems": [],
+        "observed_headers": {},
         "limitations": [
             "Operating systems and patch levels cannot be reliably identified from HTTP/TLS alone.",
             "Exposed versions are inventory evidence, not proof that a CVE is exploitable.",
@@ -129,10 +224,12 @@ def collect_host_recon(url: str, timeout: float) -> dict[str, Any]:
             if is_related_subdomain(name, hostname)
         }
     )
+    if passive_subdomains:
+        recon["certificate_transparency"] = collect_certificate_transparency(domain, timeout)
     return recon
 
 
-def fingerprint_http(headers: httpx.Headers, body: str) -> dict[str, list[dict[str, str]] | list[str]]:
+def fingerprint_http(headers: httpx.Headers, body: str) -> dict[str, Any]:
     technologies: list[dict[str, str]] = []
     os_hints: list[str] = []
     observed: set[tuple[str, str, str, str]] = set()
@@ -185,4 +282,13 @@ def fingerprint_http(headers: httpx.Headers, body: str) -> dict[str, list[dict[s
                 "confidence": confidence,
             }
         )
-    return {"technologies": technologies, "possible_operating_systems": sorted(set(os_hints))}
+    observed_headers = {
+        name: headers[name]
+        for name in SAFE_RESPONSE_HEADERS
+        if name in headers
+    }
+    return {
+        "technologies": technologies,
+        "possible_operating_systems": sorted(set(os_hints)),
+        "observed_headers": observed_headers,
+    }

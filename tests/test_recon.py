@@ -2,10 +2,33 @@ import unittest
 
 import httpx
 
-from aegisscope.recon import fingerprint_http, is_related_subdomain
+from aegisscope.recon import (
+    fingerprint_http,
+    is_related_subdomain,
+    parse_ct_entries,
+    registrable_domain,
+)
 
 
 class ReconTests(unittest.TestCase):
+    def test_registrable_domain_handles_multi_level_suffix(self) -> None:
+        self.assertEqual(
+            registrable_domain("www.brainwareuniversity.ac.in"),
+            "brainwareuniversity.ac.in",
+        )
+
+    def test_certificate_transparency_entries_are_normalized(self) -> None:
+        entries = [
+            {"name_value": "*.example.com\napi.example.com"},
+            {"dns_names": ["www.example.com", "cdn.example.com"]},
+            {"name_value": "example.com.evil.test"},
+            {"name_value": "API.example.com"},
+        ]
+        self.assertEqual(
+            parse_ct_entries(entries, "example.com"),
+            ["api.example.com", "cdn.example.com", "www.example.com"],
+        )
+
     def test_related_subdomains_include_www_siblings(self) -> None:
         self.assertTrue(is_related_subdomain("api.example.com", "www.example.com"))
         self.assertFalse(is_related_subdomain("example.com.evil.test", "example.com"))
@@ -37,6 +60,7 @@ class ReconTests(unittest.TestCase):
         self.assertTrue(
             any("Ubuntu" in item for item in fingerprint["possible_operating_systems"])
         )
+        self.assertEqual(fingerprint["observed_headers"]["server"], "nginx/1.24.0 (Ubuntu)")
 
 
 if __name__ == "__main__":

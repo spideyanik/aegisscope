@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aegisscope"
-version = "0.2.0"
+version = "0.2.1"
 description = "Scope-enforced web security assessment CLI"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "SpideyAnon" }]
-dependencies = ["httpx>=0.27,<1"]
+dependencies = ["httpx>=0.27,<1", "tldextract>=5.1,<6"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
@@ -22,11 +22,6 @@ classifiers = [
 
 [project.scripts]
 aegisscope = "aegisscope.cli:main"
-
-[project.urls]
-Homepage = "https://github.com/spideyanik/aegisscope"
-Repository = "https://github.com/spideyanik/aegisscope"
-Issues = "https://github.com/spideyanik/aegisscope/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

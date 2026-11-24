@@ -20,18 +20,23 @@ class ScanConfig:
     allowed_schemes: list[str] = field(default_factory=lambda: ["https"])
     active_probes: bool = False
     reconnaissance: bool = True
+    passive_subdomains: bool = True
     max_pages: int = 50
     max_requests: int = 150
     requests_per_second: float = 2.0
     timeout_seconds: float = 10.0
     max_response_bytes: int = 2_000_000
-    user_agent: str = "AegisScope/0.1 authorized-security-assessment"
+    user_agent: str = "AegisScope/0.2.1 authorized-security-assessment"
     headers: dict[str, str] = field(default_factory=dict)
 
     @property
     def scope(self) -> ScopePolicy:
+        hosts = [
+            host[4:] if self.allow_subdomains and host.lower().startswith("www.") else host
+            for host in self.allowed_hosts
+        ]
         return ScopePolicy(
-            tuple(self.allowed_hosts),
+            tuple(hosts),
             self.allow_subdomains,
             tuple(self.allowed_schemes),
         )
@@ -78,6 +83,7 @@ class ScanConfig:
             },
             "active_probes": self.active_probes,
             "reconnaissance": self.reconnaissance,
+            "passive_subdomains": self.passive_subdomains,
             "limits": {
                 "max_pages": self.max_pages,
                 "max_requests": self.max_requests,
@@ -102,13 +108,14 @@ class ScanConfig:
             allowed_schemes=list(data.get("allowed_schemes", ["https"])),
             active_probes=bool(data.get("active_probes", False)),
             reconnaissance=bool(data.get("reconnaissance", True)),
+            passive_subdomains=bool(data.get("passive_subdomains", True)),
             max_pages=int(limits.get("max_pages", 50)),
             max_requests=int(limits.get("max_requests", 150)),
             requests_per_second=float(limits.get("requests_per_second", 2.0)),
             timeout_seconds=float(limits.get("timeout_seconds", 10.0)),
             max_response_bytes=int(limits.get("max_response_bytes", 2_000_000)),
             user_agent=data.get(
-                "user_agent", "AegisScope/0.1 authorized-security-assessment"
+                "user_agent", "AegisScope/0.2.1 authorized-security-assessment"
             ),
             headers=dict(data.get("headers", {})),
         )
@@ -136,7 +143,7 @@ def create_config(
     scheme = urlsplit(normalized).scheme
     config = ScanConfig(
         target=normalized,
-        allowed_hosts=[host],
+        allowed_hosts=[host[4:] if allow_subdomains and host.startswith("www.") else host],
         authorization_owner=owner,
         authorization_reference=authorization_reference,
         allow_subdomains=allow_subdomains,

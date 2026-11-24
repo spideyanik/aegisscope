@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from html.parser import HTMLParser
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
 
@@ -14,9 +14,12 @@ class PageParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.base_url = base_url
         self.links: set[str] = set()
+        self.get_forms: set[str] = set()
         self.insecure_resources: set[str] = set()
         self.password_forms: list[str] = []
         self._current_form_action: str | None = None
+        self._current_form_method: str | None = None
+        self._current_form_fields: list[str] = []
         self._current_form_has_password = False
 
     def handle_starttag(
@@ -37,9 +40,14 @@ class PageParser(HTMLParser):
             crawl_candidate = True
         elif tag == "form":
             self._current_form_action = values.get("action", self.base_url)
+            self._current_form_method = values.get("method", "get").lower()
+            self._current_form_fields = []
             self._current_form_has_password = False
-        elif tag == "input" and values.get("type", "").lower() == "password":
-            self._current_form_has_password = True
+        elif tag in {"input", "select", "textarea"} and self._current_form_action:
+            if values.get("name"):
+                self._current_form_fields.append(values["name"])
+            if tag == "input" and values.get("type", "").lower() == "password":
+                self._current_form_has_password = True
 
         if candidate:
             absolute = urljoin(self.base_url, candidate)
@@ -53,7 +61,28 @@ class PageParser(HTMLParser):
         if tag == "form":
             if self._current_form_has_password and self._current_form_action:
                 self.password_forms.append(urljoin(self.base_url, self._current_form_action))
+            elif (
+                self._current_form_method == "get"
+                and self._current_form_action
+                and self._current_form_fields
+            ):
+                action = urljoin(self.base_url, self._current_form_action)
+                parts = urlsplit(action)
+                query = parse_qsl(parts.query, keep_blank_values=True)
+                existing_names = {name for name, _ in query}
+                query.extend(
+                    (name, "")
+                    for name in self._current_form_fields
+                    if name not in existing_names
+                )
+                self.get_forms.add(
+                    urlunsplit(
+                        (parts.scheme, parts.netloc, parts.path, urlencode(query), "")
+                    )
+                )
             self._current_form_action = None
+            self._current_form_method = None
+            self._current_form_fields = []
             self._current_form_has_password = False
 
 
@@ -246,6 +275,55 @@ def check_response(
                     cwe="CWE-200",
                 )
             )
+    lower_body = body.lower()
+    if status_code == 200 and path != "/.git":
+        directory_indicators = ("<title>index of /", "<title>directory listing for ")
+        if any(indicator in lower_body for indicator in directory_indicators):
+            findings.append(
+                _finding(
+                    "directory-listing",
+                    "Directory listing is enabled",
+                    "medium",
+                    url,
+                    "The server returned a browsable directory index that may expose unintended files.",
+                    "HTTP 200 response contains a directory-index title.",
+                    "Disable directory indexing and publish only required application files.",
+                    cwe="CWE-548",
+                )
+            )
+    if status_code == 200 and path.endswith(".map"):
+        if '"sources"' in body and '"mappings"' in body:
+            findings.append(
+                _finding(
+                    "source-map-exposure",
+                    "JavaScript source map is publicly accessible",
+                    "low",
+                    url,
+                    "A linked source map may reveal original source paths and application logic.",
+                    "HTTP 200 response contains source-map sources and mappings fields.",
+                    "Exclude production source maps or restrict access when they contain sensitive implementation details.",
+                    cwe="CWE-200",
+                )
+            )
+    debug_indicators = (
+        "traceback (most recent call last)",
+        "werkzeug debugger",
+        "django technical 500 response",
+        "whoops, looks like something went wrong",
+    )
+    if status_code >= 500 and any(indicator in lower_body for indicator in debug_indicators):
+        findings.append(
+            _finding(
+                "debug-error-disclosure",
+                "Detailed application error is exposed",
+                "medium",
+                url,
+                "A server error response contains a recognizable debug or stack-trace marker.",
+                "HTTP 5xx response exposed a framework debugging signature.",
+                "Disable production debug mode and return generic error pages while logging details server-side.",
+                cwe="CWE-209",
+            )
+        )
     if "text/html" in content_type.lower() and body:
         parser = parse_page(url, body)
         if parser.insecure_resources:

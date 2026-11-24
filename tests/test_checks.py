@@ -41,10 +41,18 @@ class PassiveCheckTests(unittest.TestCase):
         parser = parse_page(
             "https://example.com/",
             '<script src="/app.js"></script><form action="/change-password">'
-            '<input type="password"></form><a href="/account">account</a>',
+            '<input name="password" type="password"></form>'
+            '<form action="/search" method="get"><input name="q">'
+            '<select name="category"></select></form>'
+            '<form action="/update" method="post"><input name="value"></form>'
+            '<a href="/account">account</a>',
         )
         self.assertEqual(parser.links, {"https://example.com/account"})
         self.assertEqual(parser.password_forms, ["https://example.com/change-password"])
+        self.assertEqual(
+            parser.get_forms,
+            {"https://example.com/search?q=&category="},
+        )
 
     def test_linked_git_directory_is_reported(self) -> None:
         findings = check_response(

@@ -271,6 +271,9 @@ class Scanner:
         for operating_system in fingerprint["possible_operating_systems"]:
             if operating_system not in operating_systems:
                 operating_systems.append(operating_system)
+        observed_headers = self.result.reconnaissance.setdefault("observed_headers", {})
+        for name, value in fingerprint["observed_headers"].items():
+            observed_headers.setdefault(name, value)
 
     def _record_linked_host(self, url: str) -> None:
         if not self.result.reconnaissance:
@@ -370,7 +373,9 @@ class Scanner:
         visited: set[str] = set()
         if self.config.reconnaissance:
             self.result.reconnaissance = collect_host_recon(
-                self.config.target, self.config.timeout_seconds
+                self.config.target,
+                self.config.timeout_seconds,
+                self.config.passive_subdomains,
             )
             expires_in = self.result.reconnaissance.get("tls", {}).get("expires_in_days")
             if isinstance(expires_in, int) and expires_in < 30:
@@ -420,6 +425,18 @@ class Scanner:
             content_type = response.headers.get("content-type", "").lower()
             if "text/html" in content_type and response.body:
                 parser = parse_page(response.url, response.body)
+                get_forms = self.result.reconnaissance.setdefault(
+                    "discovered_get_forms", []
+                ) if self.result.reconnaissance else []
+                for form_url in sorted(parser.get_forms):
+                    displayed_form = redacted_url(form_url)
+                    if displayed_form not in get_forms:
+                        get_forms.append(displayed_form)
+                    if self.active and self.scope.is_allowed(form_url):
+                        normalized_form = normalize_url(form_url)
+                        if normalized_form not in queued:
+                            queued.add(normalized_form)
+                            queue.append(normalized_form)
                 for link in sorted(parser.links):
                     try:
                         normalized = normalize_url(link)

@@ -55,6 +55,10 @@ def write_reports(result: ScanResult, output_dir: str | Path) -> tuple[Path, Pat
     if recon:
         dns = recon.get("dns", {})
         tls = recon.get("tls", {})
+        certificate_transparency = recon.get("certificate_transparency", {})
+        ct_subdomains = certificate_transparency.get("subdomains", [])
+        certificate_subdomains = recon.get("certificate_subdomains", [])
+        linked_hosts = sorted(recon.get("linked_hosts", []))
         lines.extend(
             [
                 "## Reconnaissance",
@@ -71,8 +75,14 @@ def write_reports(result: ScanResult, output_dir: str | Path) -> tuple[Path, Pat
                 "",
                 "### Discovered Hosts",
                 "",
-                f"- Certificate subdomains: `{', '.join(recon.get('certificate_subdomains', [])) or 'none observed'}`",
-                f"- Linked subdomains: `{', '.join(sorted(recon.get('linked_hosts', []))) or 'none observed'}`",
+                f"- Certificate subdomains: `{', '.join(certificate_subdomains[:100]) or 'none observed'}`",
+                f"- Certificate Transparency domain: `{certificate_transparency.get('domain', 'not queried')}`",
+                f"- Certificate Transparency source: `{certificate_transparency.get('source') or 'none'}`",
+                f"- Certificate Transparency subdomains: `{', '.join(ct_subdomains[:100]) or 'none observed'}`",
+                f"- Certificate Transparency result count: `{len(ct_subdomains)}`",
+                f"- Certificate Transparency error: `{certificate_transparency.get('error') or 'none'}`",
+                f"- Linked subdomains: `{', '.join(linked_hosts[:100]) or 'none observed'}`",
+                f"- Discovered GET forms: `{len(recon.get('discovered_get_forms', []))}`",
                 "",
                 "### Technology Evidence",
                 "",
@@ -87,6 +97,15 @@ def write_reports(result: ScanResult, output_dir: str | Path) -> tuple[Path, Pat
                 )
         else:
             lines.append("No technology fingerprints were observed.")
+        lines.extend(["", "### Observed Response Headers", ""])
+        observed_headers = recon.get("observed_headers", {})
+        if observed_headers:
+            lines.extend(["| Header | Value |", "|---|---|"])
+            for name, value in sorted(observed_headers.items()):
+                safe_value = str(value).replace("|", "\\|").replace("\n", " ")
+                lines.append(f"| `{name}` | `{safe_value}` |")
+        else:
+            lines.append("No allowlisted response headers were observed.")
         lines.extend(["", "### OS Assessment", ""])
         operating_systems = recon.get("possible_operating_systems", [])
         if operating_systems:

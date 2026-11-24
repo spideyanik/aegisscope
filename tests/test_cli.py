@@ -4,9 +4,17 @@ import unittest
 from pathlib import Path
 
 from aegisscope.cli import choose_profile, run
+from aegisscope.config import create_config
 
 
 class CliTests(unittest.TestCase):
+    def test_www_subdomain_scope_uses_parent_domain(self) -> None:
+        config = create_config(
+            "https://www.example.com", "Example", "self-owned", allow_subdomains=True
+        )
+        self.assertEqual(config.allowed_hosts, ["example.com"])
+        self.assertTrue(config.scope.is_allowed("https://api.example.com/"))
+
     def test_profile_choice_accepts_number_or_name(self) -> None:
         self.assertEqual(choose_profile("2"), "injection")
         self.assertEqual(choose_profile("redirect"), "redirect")

@@ -18,6 +18,7 @@ class Finding:
     evidence: str
     remediation: str
     cwe: str | None = None
+    status: str = "needs-review"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -41,6 +42,7 @@ class ScanResult:
     active_probes_used: bool = False
     findings: list[Finding] = field(default_factory=list)
     stats: ScanStats = field(default_factory=ScanStats)
+    reconnaissance: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -50,5 +52,6 @@ class ScanResult:
             "profile": self.profile,
             "active_probes_used": self.active_probes_used,
             "stats": asdict(self.stats),
+            "reconnaissance": self.reconnaissance,
             "findings": [finding.to_dict() for finding in self.findings],
         }

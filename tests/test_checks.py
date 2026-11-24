@@ -46,6 +46,15 @@ class PassiveCheckTests(unittest.TestCase):
         self.assertEqual(parser.links, {"https://example.com/account"})
         self.assertEqual(parser.password_forms, ["https://example.com/change-password"])
 
+    def test_linked_git_directory_is_reported(self) -> None:
+        findings = check_response(
+            "https://example.com/.git/",
+            200,
+            httpx.Headers({"content-type": "text/html"}),
+            "<title>Directory listing for /.git/</title><a href='objects/'>objects/</a>",
+        )
+        self.assertIn("exposed-git-metadata", {item.check_id for item in findings})
+
 
 if __name__ == "__main__":
     unittest.main()

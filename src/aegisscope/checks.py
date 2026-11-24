@@ -73,6 +73,7 @@ def _finding(
     remediation: str,
     confidence: str = "high",
     cwe: str | None = None,
+    status: str = "confirmed",
 ) -> Finding:
     return Finding(
         check_id=check_id,
@@ -84,6 +85,7 @@ def _finding(
         evidence=evidence,
         remediation=remediation,
         cwe=cwe,
+        status=status,
     )
 
 
@@ -223,10 +225,27 @@ def check_response(
                     f"{disclosure_header}: {lower_headers[disclosure_header]}",
                     "Remove or generalize unnecessary technology-identifying headers.",
                     cwe="CWE-200",
+                    status="informational",
                 )
             )
 
     content_type = lower_headers.get("content-type", "")
+    path = urlsplit(url).path.lower().rstrip("/")
+    if path == "/.git" and status_code == 200:
+        git_indicators = ("directory listing", "objects/", "refs/", "head")
+        if any(indicator in body.lower() for indicator in git_indicators):
+            findings.append(
+                _finding(
+                    "exposed-git-metadata",
+                    "Git repository metadata is publicly accessible",
+                    "high",
+                    url,
+                    "A linked .git path returned content consistent with exposed repository metadata.",
+                    "The .git path returned HTTP 200 with repository or directory-listing indicators.",
+                    "Block access to version-control metadata and deploy from a clean build artifact.",
+                    cwe="CWE-200",
+                )
+            )
     if "text/html" in content_type.lower() and body:
         parser = parse_page(url, body)
         if parser.insecure_resources:

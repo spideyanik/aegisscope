@@ -14,6 +14,7 @@ import httpx
 from .checks import check_response, detect_new_sql_error, parse_page
 from .config import ScanConfig
 from .models import Finding, ScanResult
+from .recon import collect_host_recon, fingerprint_http, is_related_subdomain
 from .scope import ScopeError, normalize_url
 
 
@@ -48,6 +49,7 @@ SKIPPED_EXTENSIONS = {
     ".xlsx",
     ".zip",
 }
+SKIPPED_DIRECTORY_SEGMENTS = {".hg", ".svn", ".venv", "__pycache__", "node_modules"}
 REDIRECT_PARAMETERS = {
     "continue",
     "dest",
@@ -215,7 +217,13 @@ class Scanner:
 
     def _add_finding(self, finding: Finding) -> None:
         finding.url = redacted_url(finding.url)
-        digest_source = f"{finding.check_id}|{finding.url}|{finding.evidence}"
+        sitewide_prefixes = ("header-", "cookie-", "disclosure-")
+        location = (
+            f"{urlsplit(finding.url).scheme}://{urlsplit(finding.url).netloc}"
+            if finding.check_id.startswith(sitewide_prefixes)
+            else finding.url
+        )
+        digest_source = f"{finding.check_id}|{location}|{finding.evidence}"
         key = hashlib.sha256(digest_source.encode()).hexdigest()
         if key not in self._finding_keys:
             self._finding_keys.add(key)
@@ -239,8 +247,41 @@ class Scanner:
                 description="A network or TLS error prevented this URL from being assessed.",
                 evidence=f"{type(error).__name__}; request details are retained only in the redacted audit trail.",
                 remediation="Confirm availability, DNS, TLS configuration, and the assessment scope.",
+                status="informational",
             )
         )
+
+    def _merge_http_fingerprint(self, response: FetchedResponse) -> None:
+        if not self.result.reconnaissance:
+            return
+        fingerprint = fingerprint_http(response.headers, response.body)
+        technologies = self.result.reconnaissance.setdefault("technologies", [])
+        existing = {
+            (item["name"], item["version"], item["evidence"])
+            for item in technologies
+        }
+        for item in fingerprint["technologies"]:
+            key = (item["name"], item["version"], item["evidence"])
+            if key not in existing:
+                technologies.append(item)
+                existing.add(key)
+        operating_systems = self.result.reconnaissance.setdefault(
+            "possible_operating_systems", []
+        )
+        for operating_system in fingerprint["possible_operating_systems"]:
+            if operating_system not in operating_systems:
+                operating_systems.append(operating_system)
+
+    def _record_linked_host(self, url: str) -> None:
+        if not self.result.reconnaissance:
+            return
+        hostname = urlsplit(url).hostname
+        target_hostname = self.result.reconnaissance.get("hostname", "")
+        if not hostname or not is_related_subdomain(hostname, target_hostname):
+            return
+        linked_hosts = self.result.reconnaissance.setdefault("linked_hosts", [])
+        if hostname not in linked_hosts:
+            linked_hosts.append(hostname)
 
     def _active_probes(self, response: FetchedResponse) -> None:
         parameters = parse_qsl(urlsplit(response.url).query, keep_blank_values=True)
@@ -263,6 +304,7 @@ class Scanner:
                                 evidence=f"Parameter {name!r} reflected a non-executable canary.",
                                 remediation="Apply context-aware output encoding and validate untrusted input.",
                                 cwe="CWE-79",
+                                status="needs-review",
                             )
                         )
 
@@ -284,6 +326,7 @@ class Scanner:
                                 evidence=f"Parameter {name!r}; new signature: {sql_error}",
                                 remediation="Use parameterized queries, avoid dynamic SQL, and return generic errors.",
                                 cwe="CWE-89",
+                                status="likely",
                             )
                         )
 
@@ -313,6 +356,7 @@ class Scanner:
                                 evidence=f"Parameter {name!r}; Location host: example.invalid",
                                 remediation="Allowlist trusted redirect destinations or use server-side destination identifiers.",
                                 cwe="CWE-601",
+                                status="confirmed",
                             )
                         )
             except RequestBudgetExceeded:
@@ -324,6 +368,26 @@ class Scanner:
         queue: deque[str] = deque([self.config.target])
         queued = {self.config.target}
         visited: set[str] = set()
+        if self.config.reconnaissance:
+            self.result.reconnaissance = collect_host_recon(
+                self.config.target, self.config.timeout_seconds
+            )
+            expires_in = self.result.reconnaissance.get("tls", {}).get("expires_in_days")
+            if isinstance(expires_in, int) and expires_in < 30:
+                self._add_finding(
+                    Finding(
+                        check_id="tls-certificate-expiry",
+                        title="TLS certificate expires soon",
+                        severity="high" if expires_in < 0 else "low",
+                        confidence="high",
+                        url=self.config.target,
+                        description="The observed TLS certificate is expired or close to expiration.",
+                        evidence=f"Certificate expires in {expires_in} days.",
+                        remediation="Renew and deploy the certificate before expiration.",
+                        cwe="CWE-295",
+                        status="confirmed",
+                    )
+                )
         self.audit.write(
             "scan_started",
             target=redacted_url(self.config.target),
@@ -347,6 +411,7 @@ class Scanner:
                 continue
 
             self.result.stats.pages_visited += 1
+            self._merge_http_fingerprint(response)
             for finding in check_response(
                 response.url, response.status_code, response.headers, response.body
             ):
@@ -361,9 +426,15 @@ class Scanner:
                     except ScopeError:
                         continue
                     if not self.scope.is_allowed(normalized):
+                        self._record_linked_host(normalized)
                         self.result.stats.blocked_urls += 1
                         continue
                     path = urlsplit(normalized).path.lower()
+                    segments = {segment for segment in path.split("/") if segment}
+                    if segments & SKIPPED_DIRECTORY_SEGMENTS:
+                        continue
+                    if ".git" in segments and path.rstrip("/") != "/.git":
+                        continue
                     if any(path.endswith(extension) for extension in SKIPPED_EXTENSIONS):
                         continue
                     if normalized not in queued:

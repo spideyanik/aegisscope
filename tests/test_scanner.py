@@ -10,6 +10,31 @@ from aegisscope.scanner import Scanner
 
 
 class ScannerTests(unittest.TestCase):
+    def test_error_and_linked_host_records_are_independent(self) -> None:
+        config = ScanConfig(
+            target="http://example.com/",
+            allowed_hosts=["example.com"],
+            allowed_schemes=["http"],
+            authorization_owner="Test Owner",
+            authorization_reference="unit-test",
+            reconnaissance=False,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            with Scanner(config, Path(directory) / "audit.jsonl") as scanner:
+                scanner.result.reconnaissance = {
+                    "hostname": "example.com",
+                    "linked_hosts": [],
+                }
+                scanner._record_linked_host("https://api.example.com/")
+                scanner._add_error("http://example.com/", RuntimeError("test"))
+                self.assertEqual(
+                    scanner.result.reconnaissance["linked_hosts"], ["api.example.com"]
+                )
+                self.assertEqual(
+                    [finding.check_id for finding in scanner.result.findings],
+                    ["request-error"],
+                )
+
     def test_active_canaries_and_scope_blocking(self) -> None:
         requested_hosts: list[str] = []
 
@@ -42,6 +67,7 @@ class ScannerTests(unittest.TestCase):
             authorization_owner="Test Owner",
             authorization_reference="unit-test",
             active_probes=True,
+            reconnaissance=False,
             max_pages=1,
             max_requests=10,
             requests_per_second=20,
@@ -59,6 +85,10 @@ class ScannerTests(unittest.TestCase):
         self.assertIn("input-reflection", check_ids)
         self.assertIn("sql-error-indicator", check_ids)
         self.assertIn("open-redirect-indicator", check_ids)
+        redirect_finding = next(
+            finding for finding in result.findings if finding.check_id == "open-redirect-indicator"
+        )
+        self.assertEqual(redirect_finding.status, "confirmed")
         self.assertGreaterEqual(result.stats.blocked_urls, 1)
         self.assertEqual(set(requested_hosts), {"owned.test"})
 

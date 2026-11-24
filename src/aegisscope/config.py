@@ -19,6 +19,7 @@ class ScanConfig:
     allow_subdomains: bool = False
     allowed_schemes: list[str] = field(default_factory=lambda: ["https"])
     active_probes: bool = False
+    reconnaissance: bool = True
     max_pages: int = 50
     max_requests: int = 150
     requests_per_second: float = 2.0
@@ -76,6 +77,7 @@ class ScanConfig:
                 "reference": self.authorization_reference,
             },
             "active_probes": self.active_probes,
+            "reconnaissance": self.reconnaissance,
             "limits": {
                 "max_pages": self.max_pages,
                 "max_requests": self.max_requests,
@@ -99,6 +101,7 @@ class ScanConfig:
             allow_subdomains=bool(data.get("allow_subdomains", False)),
             allowed_schemes=list(data.get("allowed_schemes", ["https"])),
             active_probes=bool(data.get("active_probes", False)),
+            reconnaissance=bool(data.get("reconnaissance", True)),
             max_pages=int(limits.get("max_pages", 50)),
             max_requests=int(limits.get("max_requests", 150)),
             requests_per_second=float(limits.get("requests_per_second", 2.0)),

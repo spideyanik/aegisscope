@@ -1,6 +1,10 @@
 # AegisScope
 
-AegisScope is a scope-enforced web security assessment CLI for websites you own or have explicit permission to test. It crawls authorized pages, performs passive security checks, optionally runs a small set of non-destructive GET-parameter canaries, and generates evidence-focused reports.
+![AegisScope logo](assets/aegisscope-logo.svg)
+
+**Made by SpideyAnon**
+
+AegisScope is a Linux-only, scope-enforced web security assessment CLI for websites you own or have explicit permission to test. Arch Linux is the primary supported platform. It inventories DNS, TLS, certificate subdomains, linked hosts, and technology evidence; crawls authorized pages; performs passive security checks; optionally runs non-destructive GET-parameter canaries; and generates evidence-focused reports.
 
 > Use AegisScope only under current written authorization. A successful scan does not prove an application is secure, and every finding requires human verification.
 
@@ -11,20 +15,48 @@ AegisScope is a scope-enforced web security assessment CLI for websites you own 
 - Redirect scope enforcement
 - Request-rate, page, response-size, and total-request limits
 - Same-scope HTML crawling without form submission
+- DNS addresses and TLS certificate inventory
+- Passive subdomain discovery from certificate names and page links
+- Server, framework, version, and low-confidence OS evidence
 - Security header, cookie, mixed-content, and password-form checks
 - Optional input-reflection, SQL-error, and open-redirect indicators
 - Query-value redaction in reports and audit logs
 - JSON and Markdown reports plus a JSONL request audit trail
+- Verification labels separating confirmed, likely, review-required, and informational results
 - Environment-variable expansion for authentication headers
 
 AegisScope does not perform denial of service, password attacks, data extraction, persistence, malware delivery, file writes, or automatic exploitation.
 
 ## Install
 
-Python 3.11 or newer is required.
+Linux and Python 3.11 or newer are required. Windows and macOS are intentionally unsupported.
+
+On Arch Linux and Arch-based distributions:
 
 ```bash
-cd /home/anik/Projects/aegisscope
+sudo pacman -S --needed python python-pipx git
+pipx ensurepath
+pipx install git+https://github.com/spideyanik/aegisscope.git
+```
+
+Start a URL-first assessment:
+
+```bash
+aegisscope owner-setup
+aegisscope assess https://staging.example.com
+```
+
+The owner setup command stores only a salted PBKDF2 hash in `~/.config/aegisscope/owner-policy.json` with `0600` permissions. Every passive or active assessment requires the matching owner-issued code before any network request. Choose a profile after entering the URL; AegisScope then performs reconnaissance and the selected assessment without requiring a configuration file.
+
+The local access-code gate controls ordinary use of the installed CLI. It does not replace written permission from the website owner, and it cannot prevent someone with source-code or administrator access from modifying their own copy.
+
+Every command launch displays the AegisScope terminal shield and project attribution. Package installation intentionally avoids post-install scripts; the logo appears when the installed command is started.
+
+For local development:
+
+```bash
+git clone https://github.com/spideyanik/aegisscope.git
+cd aegisscope
 python -m venv .venv
 . .venv/bin/activate
 python -m pip install -e .
@@ -33,7 +65,7 @@ python -m pip install -e .
 For a globally available command in an isolated environment:
 
 ```bash
-pipx install /home/anik/Projects/aegisscope
+pipx install .
 ```
 
 ## Configure
@@ -58,6 +90,21 @@ aegisscope guided --config aegisscope.json --output-dir reports
 ```
 
 Active profiles require the exact interactive authorization confirmation. They never submit forms, follow an external redirect, extract database data, or attempt code execution.
+
+## Reconnaissance accuracy
+
+AegisScope reports observed IP addresses, TLS protocol and certificate metadata, certificate subdomains, linked subdomains, HTTP technology headers, HTML framework markers, and exposed versions. It does not scan a discovered host unless the scope configuration permits it.
+
+An HTTP banner cannot reliably identify the server operating system, patch level, or exploitable CVEs. OS values are therefore labeled as low-confidence hints. Exposed software versions are evidence for manual advisory review, not proof of vulnerability.
+
+## Finding verification
+
+- `confirmed`: the exact configuration weakness or behavior was directly reproduced, such as an open redirect or exposed Git metadata
+- `likely`: strong evidence exists, but exploitability still depends on application context
+- `needs-review`: a safe canary found an indicator such as reflected input, not a proven exploit
+- `informational`: inventory or diagnostic evidence with no vulnerability claim
+
+AegisScope does not claim to find every vulnerability. Authentication flaws, IDOR, business-logic abuse, stored XSS, and many authorization issues require controlled test accounts and human analysis.
 
 ## Non-interactive use
 
@@ -124,4 +171,4 @@ Use intentionally vulnerable local applications such as OWASP Juice Shop or WebG
 
 ## License
 
-MIT
+Proprietary. Copyright 2026 SpideyAnon. Access and use require prior written authorization. See `LICENSE`.

@@ -23,6 +23,10 @@ def write_reports(result: ScanResult, output_dir: str | Path) -> tuple[Path, Pat
         severity: sum(finding.severity == severity for finding in findings)
         for severity in ("high", "medium", "low", "info")
     }
+    status_counts = {
+        status: sum(finding.status == status for finding in findings)
+        for status in ("confirmed", "likely", "needs-review", "informational")
+    }
     lines = [
         "# AegisScope Security Assessment",
         "",
@@ -40,9 +44,62 @@ def write_reports(result: ScanResult, output_dir: str | Path) -> tuple[Path, Pat
         "|---:|---:|---:|---:|",
         f"| {counts['high']} | {counts['medium']} | {counts['low']} | {counts['info']} |",
         "",
+        "| Confirmed | Likely | Needs review | Informational |",
+        "|---:|---:|---:|---:|",
+        f"| {status_counts['confirmed']} | {status_counts['likely']} | {status_counts['needs-review']} | {status_counts['informational']} |",
+        "",
         "> Findings are indicators requiring human verification, not proof of compromise.",
         "",
     ]
+    recon = result.reconnaissance
+    if recon:
+        dns = recon.get("dns", {})
+        tls = recon.get("tls", {})
+        lines.extend(
+            [
+                "## Reconnaissance",
+                "",
+                f"- Hostname: `{recon.get('hostname', 'unknown')}`",
+                f"- Port: `{recon.get('port', 'unknown')}`",
+                f"- IP addresses: `{', '.join(dns.get('addresses', [])) or 'none observed'}`",
+                f"- DNS error: `{dns.get('error') or 'none'}`",
+                f"- TLS protocol: `{tls.get('protocol', 'not observed')}`",
+                f"- TLS cipher: `{tls.get('cipher', 'not observed')}`",
+                f"- Certificate issuer: `{tls.get('issuer', 'not observed')}`",
+                f"- Certificate expiry: `{tls.get('not_after', 'not observed')}`",
+                f"- TLS inspection error: `{tls.get('error') or 'none'}`",
+                "",
+                "### Discovered Hosts",
+                "",
+                f"- Certificate subdomains: `{', '.join(recon.get('certificate_subdomains', [])) or 'none observed'}`",
+                f"- Linked subdomains: `{', '.join(sorted(recon.get('linked_hosts', []))) or 'none observed'}`",
+                "",
+                "### Technology Evidence",
+                "",
+            ]
+        )
+        technologies = recon.get("technologies", [])
+        if technologies:
+            lines.extend(["| Technology | Version | Evidence | Confidence |", "|---|---|---|---|"])
+            for item in technologies:
+                lines.append(
+                    f"| {item['name']} | {item['version']} | {item['evidence']} | {item['confidence']} |"
+                )
+        else:
+            lines.append("No technology fingerprints were observed.")
+        lines.extend(["", "### OS Assessment", ""])
+        operating_systems = recon.get("possible_operating_systems", [])
+        if operating_systems:
+            lines.extend(f"- {item}" for item in operating_systems)
+        else:
+            lines.append("- No defensible operating-system hint was observed.")
+        lines.extend(
+            [
+                "- HTTP/TLS fingerprinting cannot reliably determine the server OS or patch level.",
+                "- Version evidence does not prove a CVE is exploitable; confirm deployment and patch status manually.",
+                "",
+            ]
+        )
     if not findings:
         lines.extend(["## Findings", "", "No findings were produced.", ""])
     for index, finding in enumerate(findings, start=1):
@@ -52,6 +109,7 @@ def write_reports(result: ScanResult, output_dir: str | Path) -> tuple[Path, Pat
                 "",
                 f"- Severity: **{finding.severity.upper()}**",
                 f"- Confidence: `{finding.confidence}`",
+                f"- Verification status: **{finding.status.upper()}**",
                 f"- Check: `{finding.check_id}`",
                 f"- URL: `{finding.url}`",
                 f"- CWE: `{finding.cwe or 'Not assigned'}`",

@@ -38,6 +38,7 @@ class ScanResult:
     target: str
     started_at: str
     profile: str = "passive"
+    modules: list[str] = field(default_factory=list)
     completed_at: str = ""
     active_probes_used: bool = False
     findings: list[Finding] = field(default_factory=list)
@@ -50,6 +51,7 @@ class ScanResult:
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "profile": self.profile,
+            "modules": self.modules,
             "active_probes_used": self.active_probes_used,
             "stats": asdict(self.stats),
             "reconnaissance": self.reconnaissance,

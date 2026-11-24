@@ -18,6 +18,9 @@ AegisScope is a Linux-only, scope-enforced web security assessment CLI for websi
 - DNS addresses and TLS certificate inventory
 - Passive subdomain discovery from certificate names and page links
 - Certificate Transparency discovery with Cert Spotter and crt.sh fallback
+- Bounded DNS resolution for discovered subdomains
+- Passive RDAP network and hosting-provider details
+- Bounded common TCP-port exposure scanning without service exploitation
 - Safe raw response-header inventory in JSON and Markdown reports
 - Server, framework, version, and low-confidence OS evidence
 - Security header, cookie, mixed-content, and password-form checks
@@ -48,7 +51,7 @@ aegisscope owner-setup
 aegisscope assess https://staging.example.com
 ```
 
-The owner setup command stores only a salted PBKDF2 hash in `~/.config/aegisscope/owner-policy.json` with `0600` permissions. Every passive or active assessment requires the matching owner-issued code before any network request. Choose a profile after entering the URL; AegisScope then performs reconnaissance and the selected assessment without requiring a configuration file.
+The owner setup command stores only a salted PBKDF2 hash in `~/.config/aegisscope/owner-policy.json` with `0600` permissions. Every passive or active assessment requires the matching owner-issued code before any network request. After entering the URL, choose a scan type and, when web scanning is selected, a web profile.
 
 The local access-code gate controls ordinary use of the installed CLI. It does not replace written permission from the website owner, and it cannot prevent someone with source-code or administrator access from modifying their own copy.
 
@@ -78,7 +81,15 @@ The easiest first run is the guided menu:
 aegisscope
 ```
 
-You will define or load an authorized target and choose one of these profiles:
+After defining or loading an authorized target, choose a scan type:
+
+- Host and provider scan: DNS, IP addresses, TLS, HTTP technology, and RDAP provider details
+- Subdomain scan: Certificate Transparency names and bounded DNS resolution
+- Web vulnerability scan: safe crawling and the selected web assessment profile
+- Common-port exposure scan: bounded TCP connection checks without exploitation
+- Full authorized scan: host, provider, subdomain, port, and web modules
+
+Web and full scans then offer these profiles:
 
 - Passive audit: safe crawling, headers, cookies, and mixed-content checks
 - Injection indicators: passive checks plus harmless reflection and database-error canaries
@@ -91,7 +102,7 @@ You can also start the menu explicitly and choose other file locations:
 aegisscope guided --config aegisscope.json --output-dir reports
 ```
 
-Active profiles require the exact interactive authorization confirmation. They never submit forms, follow an external redirect, extract database data, or attempt code execution.
+Every scan requires the configured owner authorization code. Active web profiles never submit POST forms, follow an external redirect, extract database data, or attempt code execution.
 
 ## Reconnaissance accuracy
 
@@ -100,6 +111,8 @@ AegisScope reports observed IP addresses, TLS protocol and certificate metadata,
 Certificate Transparency discovery sends the registrable domain, but no credentials or page content, to Cert Spotter or the crt.sh fallback. Set `"passive_subdomains": false` in the configuration to disable third-party lookups.
 
 An HTTP banner cannot reliably identify the server operating system, patch level, or exploitable CVEs. OS values are therefore labeled as low-confidence hints. Exposed software versions are evidence for manual advisory review, not proof of vulnerability.
+
+An open TCP port confirms network exposure only. It is not automatically a vulnerability. AegisScope flags selected administrative and database ports for review but does not authenticate, enumerate, brute-force, or exploit the service.
 
 ## Finding verification
 
@@ -140,7 +153,7 @@ Validate and run:
 
 ```bash
 aegisscope validate --config aegisscope.json
-aegisscope scan --config aegisscope.json --output-dir reports
+aegisscope scan --config aegisscope.json --scan-type full --output-dir reports
 ```
 
 The output directory contains `report.json`, `report.md`, and `audit.jsonl`.

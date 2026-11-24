@@ -3,11 +3,20 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from aegisscope.cli import choose_profile, run
+from aegisscope.cli import choose_profile, choose_scan_type, configure_scan_type, run
 from aegisscope.config import create_config
 
 
 class CliTests(unittest.TestCase):
+    def test_scan_type_choice_and_configuration(self) -> None:
+        self.assertEqual(choose_scan_type("4"), "ports")
+        config = create_config("https://example.com", "Example", "self-owned")
+        configure_scan_type(config, "ports")
+        self.assertTrue(config.reconnaissance)
+        self.assertTrue(config.port_scan)
+        self.assertFalse(config.web_scan)
+        self.assertFalse(config.passive_subdomains)
+
     def test_www_subdomain_scope_uses_parent_domain(self) -> None:
         config = create_config(
             "https://www.example.com", "Example", "self-owned", allow_subdomains=True

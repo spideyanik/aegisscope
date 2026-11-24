@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import parse_qs
 
 import httpx
@@ -10,6 +11,46 @@ from aegisscope.scanner import Scanner
 
 
 class ScannerTests(unittest.TestCase):
+    @patch("aegisscope.scanner.collect_host_recon")
+    def test_host_only_scan_fingerprints_without_crawling(self, collect_recon) -> None:
+        collect_recon.return_value = {
+            "hostname": "owned.test",
+            "dns": {"addresses": ["192.0.2.10"], "error": None},
+            "tls": {"enabled": False},
+            "technologies": [],
+            "possible_operating_systems": [],
+            "observed_headers": {},
+        }
+        config = ScanConfig(
+            target="http://owned.test/",
+            allowed_hosts=["owned.test"],
+            allowed_schemes=["http"],
+            authorization_owner="Test Owner",
+            authorization_reference="unit-test",
+            passive_subdomains=False,
+            provider_lookup=False,
+            web_scan=False,
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html", "server": "nginx/1.24.0"},
+                text="<html><a href='/not-crawled'>link</a></html>",
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            with Scanner(
+                config,
+                Path(directory) / "audit.jsonl",
+                transport=httpx.MockTransport(handler),
+            ) as scanner:
+                result = scanner.run()
+        self.assertEqual(result.stats.requests_sent, 1)
+        self.assertEqual(result.stats.pages_visited, 1)
+        self.assertEqual(result.reconnaissance["technologies"][0]["name"], "nginx")
+        self.assertIn("header-content-security-policy", {item.check_id for item in result.findings})
+
     def test_error_and_linked_host_records_are_independent(self) -> None:
         config = ScanConfig(
             target="http://example.com/",

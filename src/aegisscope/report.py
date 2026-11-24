@@ -33,6 +33,7 @@ def write_reports(result: ScanResult, output_dir: str | Path) -> tuple[Path, Pat
         f"- Target: `{result.target}`",
         f"- Started: `{result.started_at}`",
         f"- Completed: `{result.completed_at}`",
+        f"- Modules: `{', '.join(result.modules) or 'none'}`",
         f"- Assessment profile: `{result.profile}`",
         f"- Active probes used: `{'yes' if result.active_probes_used else 'no'}`",
         f"- Requests sent: `{result.stats.requests_sent}`",
@@ -59,6 +60,7 @@ def write_reports(result: ScanResult, output_dir: str | Path) -> tuple[Path, Pat
         ct_subdomains = certificate_transparency.get("subdomains", [])
         certificate_subdomains = recon.get("certificate_subdomains", [])
         linked_hosts = sorted(recon.get("linked_hosts", []))
+        resolved_subdomains = recon.get("resolved_subdomains", [])
         lines.extend(
             [
                 "## Reconnaissance",
@@ -82,12 +84,58 @@ def write_reports(result: ScanResult, output_dir: str | Path) -> tuple[Path, Pat
                 f"- Certificate Transparency result count: `{len(ct_subdomains)}`",
                 f"- Certificate Transparency error: `{certificate_transparency.get('error') or 'none'}`",
                 f"- Linked subdomains: `{', '.join(linked_hosts[:100]) or 'none observed'}`",
+                f"- DNS-resolved subdomains: `{len(resolved_subdomains)}`",
                 f"- Discovered GET forms: `{len(recon.get('discovered_get_forms', []))}`",
                 "",
-                "### Technology Evidence",
+                "### Resolved Subdomains",
                 "",
             ]
         )
+        if resolved_subdomains:
+            lines.extend(["| Hostname | Addresses |", "|---|---|"])
+            for item in resolved_subdomains[:100]:
+                lines.append(
+                    f"| `{item['hostname']}` | `{', '.join(item['addresses'])}` |"
+                )
+        else:
+            lines.append("No discovered subdomain resolved within the configured limit.")
+
+        lines.extend(["", "### Network Provider", ""])
+        provider_records = recon.get("provider_records", [])
+        if provider_records:
+            lines.extend(
+                [
+                    "| Address | Network | Country | Entities | Error |",
+                    "|---|---|---|---|---|",
+                ]
+            )
+            for item in provider_records:
+                lines.append(
+                    f"| `{item.get('address', '')}` | `{item.get('network_name') or 'unknown'}` | "
+                    f"`{item.get('country') or 'unknown'}` | `{', '.join(item.get('entities', [])) or 'none'}` | "
+                    f"`{item.get('error') or 'none'}` |"
+                )
+        else:
+            lines.append("Provider lookup was disabled or no address was available.")
+
+        lines.extend(["", "### Common TCP Ports", ""])
+        port_scan = recon.get("port_scan")
+        if port_scan:
+            lines.append(
+                f"Scanned `{len(port_scan.get('scanned_ports', []))}` bounded TCP ports on `{port_scan.get('hostname', '')}`."
+            )
+            open_ports = port_scan.get("open_ports", [])
+            if open_ports:
+                lines.extend(["", "| Port | Service |", "|---:|---|"])
+                for item in open_ports:
+                    lines.append(f"| {item['port']} | {item['service']} |")
+            else:
+                lines.extend(["", "No configured TCP port accepted a connection."])
+            lines.extend(["", port_scan.get("note", ""), ""])
+        else:
+            lines.extend(["Port scanning was not selected.", ""])
+
+        lines.extend(["### Technology Evidence", ""])
         technologies = recon.get("technologies", [])
         if technologies:
             lines.extend(["| Technology | Version | Evidence | Confidence |", "|---|---|---|---|"])

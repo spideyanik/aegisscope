@@ -258,6 +258,39 @@ def check_response(
                 )
             )
 
+    allow_origin = lower_headers.get("access-control-allow-origin", "").strip()
+    allow_credentials = lower_headers.get(
+        "access-control-allow-credentials", ""
+    ).strip().lower()
+    if allow_origin == "*" and allow_credentials == "true":
+        findings.append(
+            _finding(
+                "cors-wildcard-credentials",
+                "CORS policy combines wildcard origin with credentials",
+                "low",
+                url,
+                "The response declares both a wildcard allowed origin and credential support. Browsers reject this combination, but it indicates an inconsistent CORS policy.",
+                "Access-Control-Allow-Origin: *; Access-Control-Allow-Credentials: true",
+                "Use explicit trusted origins when credentials are required, or disable credentialed CORS.",
+                cwe="CWE-942",
+            )
+        )
+    elif allow_origin == "null" and allow_credentials == "true":
+        findings.append(
+            _finding(
+                "cors-null-credentials",
+                "Credentialed CORS trusts the null origin",
+                "medium",
+                url,
+                "The response permits credentialed requests from the null origin, which requires manual exploitability review.",
+                "Access-Control-Allow-Origin: null; Access-Control-Allow-Credentials: true",
+                "Remove null-origin trust and allowlist only required application origins.",
+                confidence="medium",
+                cwe="CWE-942",
+                status="needs-review",
+            )
+        )
+
     content_type = lower_headers.get("content-type", "")
     path = urlsplit(url).path.lower().rstrip("/")
     if path == "/.git" and status_code == 200:

@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import Mock, patch
 
 import httpx
 
@@ -6,11 +7,44 @@ from aegisscope.recon import (
     fingerprint_http,
     is_related_subdomain,
     parse_ct_entries,
+    parse_rdap_record,
     registrable_domain,
+    scan_common_ports,
 )
 
 
 class ReconTests(unittest.TestCase):
+    def test_rdap_provider_record_extracts_network_owner(self) -> None:
+        record = parse_rdap_record(
+            "203.0.113.10",
+            {
+                "name": "EXAMPLE-NET",
+                "country": "US",
+                "entities": [
+                    {
+                        "vcardArray": [
+                            "vcard",
+                            [["fn", {}, "text", "Example Hosting Provider"]],
+                        ]
+                    }
+                ],
+            },
+        )
+        self.assertEqual(record["network_name"], "EXAMPLE-NET")
+        self.assertEqual(record["entities"], ["Example Hosting Provider"])
+
+    def test_common_port_scan_reports_only_open_ports(self) -> None:
+        def connect(address: tuple[str, int], timeout: float) -> Mock:
+            if address[1] != 22:
+                raise ConnectionRefusedError
+            connection = Mock()
+            connection.close = Mock()
+            return connection
+
+        with patch("aegisscope.recon.socket.create_connection", side_effect=connect):
+            result = scan_common_ports("example.com", [22, 80], 0.2)
+        self.assertEqual(result["open_ports"], [{"port": 22, "service": "SSH"}])
+
     def test_registrable_domain_handles_multi_level_suffix(self) -> None:
         self.assertEqual(
             registrable_domain("www.brainwareuniversity.ac.in"),

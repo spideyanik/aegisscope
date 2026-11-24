@@ -14,7 +14,12 @@ import httpx
 from .checks import check_response, detect_new_sql_error, parse_page
 from .config import ScanConfig
 from .models import Finding, ScanResult
-from .recon import collect_host_recon, fingerprint_http, is_related_subdomain
+from .recon import (
+    collect_host_recon,
+    fingerprint_http,
+    is_related_subdomain,
+    scan_common_ports,
+)
 from .scope import ScopeError, normalize_url
 
 
@@ -67,6 +72,20 @@ ASSESSMENT_PROFILES: dict[str, frozenset[str]] = {
     "injection": frozenset({"reflection", "sql-error"}),
     "redirect": frozenset({"open-redirect"}),
     "full-safe": frozenset({"reflection", "sql-error", "open-redirect"}),
+}
+REVIEW_PORTS = {
+    21: "Unencrypted FTP may expose credentials and data.",
+    445: "Internet-exposed SMB should be reviewed for necessity and access controls.",
+    1433: "An exposed database listener should be restricted to trusted networks.",
+    1521: "An exposed database listener should be restricted to trusted networks.",
+    2049: "Internet-exposed NFS should be reviewed for export and network restrictions.",
+    2375: "An unencrypted Docker API can provide control of the container host.",
+    3306: "An exposed database listener should be restricted to trusted networks.",
+    3389: "Internet-exposed RDP should use strong access controls and network restrictions.",
+    5432: "An exposed database listener should be restricted to trusted networks.",
+    6379: "Internet-exposed Redis should require authentication and network restrictions.",
+    9200: "Internet-exposed Elasticsearch should require authentication and network restrictions.",
+    27017: "Internet-exposed MongoDB should require authentication and network restrictions.",
 }
 
 
@@ -135,6 +154,16 @@ class Scanner:
             target=config.target,
             started_at=utc_now(),
             profile=profile,
+            modules=[
+                name
+                for name, enabled in (
+                    ("host", config.reconnaissance),
+                    ("subdomains", config.passive_subdomains),
+                    ("web", config.web_scan),
+                    ("ports", config.port_scan),
+                )
+                if enabled
+            ],
             active_probes_used=self.active,
         )
         headers = {"User-Agent": config.user_agent, **config.resolved_headers()}
@@ -367,15 +396,39 @@ class Scanner:
             except (httpx.HTTPError, ScopeError, UnicodeError) as error:
                 self._add_error(response.url, error)
 
+    def _complete_result(self, queued_urls: int) -> ScanResult:
+        self.result.stats.urls_discovered = queued_urls
+        self.result.completed_at = utc_now()
+        self.audit.write(
+            "scan_completed",
+            requests=self.result.stats.requests_sent,
+            pages=self.result.stats.pages_visited,
+            findings=len(self.result.findings),
+            blocked_urls=self.result.stats.blocked_urls,
+        )
+        return self.result
+
     def run(self) -> ScanResult:
         queue: deque[str] = deque([self.config.target])
         queued = {self.config.target}
         visited: set[str] = set()
+        self.audit.write(
+            "scan_started",
+            target=redacted_url(self.config.target),
+            authorization_owner=self.config.authorization_owner,
+            authorization_reference=self.config.authorization_reference,
+            active=self.active,
+            profile=self.profile,
+            modules=self.result.modules,
+        )
         if self.config.reconnaissance:
             self.result.reconnaissance = collect_host_recon(
                 self.config.target,
                 self.config.timeout_seconds,
                 self.config.passive_subdomains,
+                self.config.provider_lookup,
+                self.config.resolve_subdomains,
+                self.config.max_subdomains,
             )
             expires_in = self.result.reconnaissance.get("tls", {}).get("expires_in_days")
             if isinstance(expires_in, int) and expires_in < 30:
@@ -393,14 +446,54 @@ class Scanner:
                         status="confirmed",
                     )
                 )
-        self.audit.write(
-            "scan_started",
-            target=redacted_url(self.config.target),
-            authorization_owner=self.config.authorization_owner,
-            authorization_reference=self.config.authorization_reference,
-            active=self.active,
-            profile=self.profile,
-        )
+        if self.config.port_scan:
+            hostname = urlsplit(self.config.target).hostname or ""
+            port_results = scan_common_ports(
+                hostname,
+                self.config.common_ports,
+                self.config.port_timeout_seconds,
+            )
+            self.result.reconnaissance["port_scan"] = port_results
+            self.audit.write(
+                "port_scan_completed",
+                host=hostname,
+                scanned_ports=len(self.config.common_ports),
+                open_ports=[item["port"] for item in port_results["open_ports"]],
+            )
+            for item in port_results["open_ports"]:
+                if item["port"] not in REVIEW_PORTS:
+                    continue
+                self._add_finding(
+                    Finding(
+                        check_id="network-service-exposure",
+                        title="Potentially sensitive network service is exposed",
+                        severity="high" if item["port"] == 2375 else "medium",
+                        confidence="high",
+                        url=self.config.target,
+                        description=REVIEW_PORTS[item["port"]],
+                        evidence=f"TCP port {item['port']} ({item['service']}) accepted a connection.",
+                        remediation="Confirm the service is required, patched, authenticated, and restricted to trusted source networks.",
+                        cwe="CWE-284",
+                        status="needs-review",
+                    )
+                )
+
+        if not self.config.web_scan:
+            if self.config.reconnaissance:
+                try:
+                    response = self._fetch(self.config.target, "host-fingerprint")
+                    self._merge_http_fingerprint(response)
+                    self.result.stats.pages_visited = 1
+                    for finding in check_response(
+                        response.url,
+                        response.status_code,
+                        response.headers,
+                        response.body,
+                    ):
+                        self._add_finding(finding)
+                except (httpx.HTTPError, ScopeError, UnicodeError) as error:
+                    self._add_error(self.config.target, error)
+            return self._complete_result(0)
 
         while queue and len(visited) < self.config.max_pages:
             url = queue.popleft()
@@ -473,13 +566,4 @@ class Scanner:
             if self.active and urlsplit(response.url).query:
                 self._active_probes(response)
 
-        self.result.stats.urls_discovered = len(queued)
-        self.result.completed_at = utc_now()
-        self.audit.write(
-            "scan_completed",
-            requests=self.result.stats.requests_sent,
-            pages=self.result.stats.pages_visited,
-            findings=len(self.result.findings),
-            blocked_urls=self.result.stats.blocked_urls,
-        )
-        return self.result
+        return self._complete_result(len(queued))

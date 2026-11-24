@@ -10,6 +10,39 @@ from urllib.parse import urlsplit
 from .scope import ScopeError, ScopePolicy, normalize_url
 
 
+DEFAULT_COMMON_PORTS = [
+    21,
+    22,
+    25,
+    53,
+    80,
+    110,
+    143,
+    443,
+    445,
+    465,
+    587,
+    993,
+    995,
+    1433,
+    1521,
+    2049,
+    2375,
+    3000,
+    3306,
+    3389,
+    5432,
+    5601,
+    6379,
+    8000,
+    8080,
+    8443,
+    9000,
+    9200,
+    27017,
+]
+
+
 @dataclass(slots=True)
 class ScanConfig:
     target: str
@@ -21,12 +54,19 @@ class ScanConfig:
     active_probes: bool = False
     reconnaissance: bool = True
     passive_subdomains: bool = True
+    provider_lookup: bool = True
+    resolve_subdomains: bool = True
+    web_scan: bool = True
+    port_scan: bool = False
+    common_ports: list[int] = field(default_factory=lambda: list(DEFAULT_COMMON_PORTS))
+    port_timeout_seconds: float = 1.0
+    max_subdomains: int = 100
     max_pages: int = 50
     max_requests: int = 150
     requests_per_second: float = 2.0
     timeout_seconds: float = 10.0
     max_response_bytes: int = 2_000_000
-    user_agent: str = "AegisScope/0.2.1 authorized-security-assessment"
+    user_agent: str = "AegisScope/0.3.0 authorized-security-assessment"
     headers: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -59,6 +99,15 @@ class ScanConfig:
             raise ValueError("timeout_seconds must be between 1 and 120")
         if not 1_024 <= self.max_response_bytes <= 10_000_000:
             raise ValueError("max_response_bytes must be between 1024 and 10000000")
+        if not 0.1 <= self.port_timeout_seconds <= 5:
+            raise ValueError("port_timeout_seconds must be between 0.1 and 5")
+        if not 1 <= self.max_subdomains <= 500:
+            raise ValueError("max_subdomains must be between 1 and 500")
+        if not 1 <= len(self.common_ports) <= 100:
+            raise ValueError("common_ports must contain between 1 and 100 ports")
+        if any(not 1 <= port <= 65535 for port in self.common_ports):
+            raise ValueError("common_ports contains an invalid TCP port")
+        self.common_ports = sorted(set(self.common_ports))
 
     def resolved_headers(self) -> dict[str, str]:
         resolved: dict[str, str] = {}
@@ -84,6 +133,17 @@ class ScanConfig:
             "active_probes": self.active_probes,
             "reconnaissance": self.reconnaissance,
             "passive_subdomains": self.passive_subdomains,
+            "modules": {
+                "provider_lookup": self.provider_lookup,
+                "resolve_subdomains": self.resolve_subdomains,
+                "web_scan": self.web_scan,
+                "port_scan": self.port_scan,
+            },
+            "network_scan": {
+                "common_ports": self.common_ports,
+                "port_timeout_seconds": self.port_timeout_seconds,
+                "max_subdomains": self.max_subdomains,
+            },
             "limits": {
                 "max_pages": self.max_pages,
                 "max_requests": self.max_requests,
@@ -99,6 +159,8 @@ class ScanConfig:
     def from_dict(cls, data: dict[str, Any]) -> "ScanConfig":
         authorization = data.get("authorization", {})
         limits = data.get("limits", {})
+        modules = data.get("modules", {})
+        network_scan = data.get("network_scan", {})
         config = cls(
             target=data["target"],
             allowed_hosts=list(data.get("allowed_hosts", [])),
@@ -109,13 +171,23 @@ class ScanConfig:
             active_probes=bool(data.get("active_probes", False)),
             reconnaissance=bool(data.get("reconnaissance", True)),
             passive_subdomains=bool(data.get("passive_subdomains", True)),
+            provider_lookup=bool(modules.get("provider_lookup", True)),
+            resolve_subdomains=bool(modules.get("resolve_subdomains", True)),
+            web_scan=bool(modules.get("web_scan", True)),
+            port_scan=bool(modules.get("port_scan", False)),
+            common_ports=[
+                int(port)
+                for port in network_scan.get("common_ports", DEFAULT_COMMON_PORTS)
+            ],
+            port_timeout_seconds=float(network_scan.get("port_timeout_seconds", 1.0)),
+            max_subdomains=int(network_scan.get("max_subdomains", 100)),
             max_pages=int(limits.get("max_pages", 50)),
             max_requests=int(limits.get("max_requests", 150)),
             requests_per_second=float(limits.get("requests_per_second", 2.0)),
             timeout_seconds=float(limits.get("timeout_seconds", 10.0)),
             max_response_bytes=int(limits.get("max_response_bytes", 2_000_000)),
             user_agent=data.get(
-                "user_agent", "AegisScope/0.2.1 authorized-security-assessment"
+                "user_agent", "AegisScope/0.3.0 authorized-security-assessment"
             ),
             headers=dict(data.get("headers", {})),
         )

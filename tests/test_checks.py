@@ -63,6 +63,21 @@ class PassiveCheckTests(unittest.TestCase):
         )
         self.assertIn("exposed-git-metadata", {item.check_id for item in findings})
 
+    def test_inconsistent_credentialed_cors_is_reported(self) -> None:
+        findings = check_response(
+            "https://example.com/",
+            200,
+            httpx.Headers(
+                {
+                    "content-type": "text/plain",
+                    "access-control-allow-origin": "*",
+                    "access-control-allow-credentials": "true",
+                }
+            ),
+            "ok",
+        )
+        self.assertIn("cors-wildcard-credentials", {item.check_id for item in findings})
+
 
 if __name__ == "__main__":
     unittest.main()

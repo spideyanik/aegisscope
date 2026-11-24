@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+import ipaddress
 import socket
 import ssl
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
@@ -49,6 +51,37 @@ SAFE_RESPONSE_HEADERS = (
     "cache-control",
 )
 _TLD_EXTRACT = tldextract.TLDExtract(suffix_list_urls=())
+COMMON_SERVICE_NAMES = {
+    21: "FTP",
+    22: "SSH",
+    25: "SMTP",
+    53: "DNS",
+    80: "HTTP",
+    110: "POP3",
+    143: "IMAP",
+    443: "HTTPS",
+    445: "SMB",
+    465: "SMTPS",
+    587: "SMTP submission",
+    993: "IMAPS",
+    995: "POP3S",
+    1433: "Microsoft SQL Server",
+    1521: "Oracle Database",
+    2049: "NFS",
+    2375: "Docker API",
+    3000: "Web application",
+    3306: "MySQL",
+    3389: "RDP",
+    5432: "PostgreSQL",
+    5601: "Kibana",
+    6379: "Redis",
+    8000: "Alternate HTTP",
+    8080: "Alternate HTTP",
+    8443: "Alternate HTTPS",
+    9000: "Application service",
+    9200: "Elasticsearch",
+    27017: "MongoDB",
+}
 
 
 def _name_from_x509(parts: tuple[tuple[tuple[str, str], ...], ...]) -> str:
@@ -107,7 +140,7 @@ def collect_certificate_transparency(domain: str, timeout: float) -> dict[str, A
                 "include_subdomains": "true",
                 "expand": "dns_names",
             },
-            headers={"User-Agent": "AegisScope/0.2.1 passive-certificate-discovery"},
+            headers={"User-Agent": "AegisScope/0.3.0 passive-certificate-discovery"},
             timeout=timeout,
             follow_redirects=True,
         )
@@ -122,7 +155,7 @@ def collect_certificate_transparency(domain: str, timeout: float) -> dict[str, A
         response = httpx.get(
             "https://crt.sh/",
             params={"q": f"%.{domain}", "output": "json"},
-            headers={"User-Agent": "AegisScope/0.2.1 passive-certificate-discovery"},
+            headers={"User-Agent": "AegisScope/0.3.0 passive-certificate-discovery"},
             timeout=max(timeout, 30),
             follow_redirects=True,
         )
@@ -149,6 +182,123 @@ def collect_dns(hostname: str, port: int) -> dict[str, Any]:
     except OSError as error:
         result["error"] = f"{type(error).__name__}: DNS resolution failed"
     return result
+
+
+def parse_rdap_record(address: str, record: object) -> dict[str, Any]:
+    if not isinstance(record, dict):
+        return {"address": address, "error": "invalid RDAP response"}
+    provider_names: list[str] = []
+    for entity in record.get("entities", []):
+        if not isinstance(entity, dict):
+            continue
+        vcard = entity.get("vcardArray")
+        if not isinstance(vcard, list) or len(vcard) < 2 or not isinstance(vcard[1], list):
+            continue
+        for field in vcard[1]:
+            if isinstance(field, list) and len(field) >= 4 and field[0] == "fn":
+                provider_names.append(str(field[3]))
+    return {
+        "address": address,
+        "network_name": record.get("name") or record.get("handle"),
+        "handle": record.get("handle"),
+        "country": record.get("country"),
+        "start_address": record.get("startAddress"),
+        "end_address": record.get("endAddress"),
+        "entities": sorted(set(provider_names))[:10],
+        "error": None,
+    }
+
+
+def collect_provider_records(addresses: list[str], timeout: float) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for address in addresses[:3]:
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if not parsed.is_global:
+            records.append(
+                {
+                    "address": address,
+                    "network_name": "private or non-global address",
+                    "error": None,
+                }
+            )
+            continue
+        try:
+            response = httpx.get(
+                f"https://rdap.org/ip/{address}",
+                headers={"User-Agent": "AegisScope/0.3.0 passive-provider-lookup"},
+                timeout=timeout,
+                follow_redirects=True,
+            )
+            response.raise_for_status()
+            records.append(parse_rdap_record(address, response.json()))
+        except (httpx.HTTPError, ValueError) as error:
+            records.append(
+                {
+                    "address": address,
+                    "network_name": None,
+                    "error": f"{type(error).__name__}: provider lookup failed",
+                }
+            )
+    return records
+
+
+def resolve_subdomain_hosts(hostnames: list[str], limit: int) -> list[dict[str, Any]]:
+    def resolve(hostname: str) -> dict[str, Any] | None:
+        try:
+            addresses = sorted(
+                {
+                    entry[4][0]
+                    for entry in socket.getaddrinfo(
+                        hostname, None, type=socket.SOCK_STREAM
+                    )
+                }
+            )
+            return {"hostname": hostname, "addresses": addresses}
+        except OSError:
+            return None
+
+    resolved: list[dict[str, Any]] = []
+    selected = sorted(set(hostnames))[:limit]
+    with ThreadPoolExecutor(max_workers=min(12, max(1, len(selected)))) as executor:
+        futures = {executor.submit(resolve, hostname): hostname for hostname in selected}
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                resolved.append(result)
+    return sorted(resolved, key=lambda item: item["hostname"])
+
+
+def scan_common_ports(
+    hostname: str, ports: list[int], timeout: float
+) -> dict[str, Any]:
+    def connect(port: int) -> dict[str, Any] | None:
+        try:
+            connection = socket.create_connection((hostname, port), timeout=timeout)
+            connection.close()
+            return {
+                "port": port,
+                "service": COMMON_SERVICE_NAMES.get(port, "unknown"),
+            }
+        except OSError:
+            return None
+
+    open_ports: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=min(20, len(ports))) as executor:
+        futures = {executor.submit(connect, port): port for port in ports}
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                open_ports.append(result)
+    return {
+        "hostname": hostname,
+        "transport": "tcp",
+        "scanned_ports": ports,
+        "open_ports": sorted(open_ports, key=lambda item: item["port"]),
+        "note": "A TCP connection confirms exposure, not a vulnerability or service version.",
+    }
 
 
 def collect_tls(hostname: str, port: int, timeout: float) -> dict[str, Any]:
@@ -188,7 +338,12 @@ def collect_tls(hostname: str, port: int, timeout: float) -> dict[str, Any]:
 
 
 def collect_host_recon(
-    url: str, timeout: float, passive_subdomains: bool = True
+    url: str,
+    timeout: float,
+    passive_subdomains: bool = True,
+    provider_lookup: bool = True,
+    resolve_subdomains: bool = True,
+    max_subdomains: int = 100,
 ) -> dict[str, Any]:
     parts = urlsplit(url)
     hostname = parts.hostname or ""
@@ -210,6 +365,8 @@ def collect_host_recon(
         "technologies": [],
         "possible_operating_systems": [],
         "observed_headers": {},
+        "provider_records": [],
+        "resolved_subdomains": [],
         "limitations": [
             "Operating systems and patch levels cannot be reliably identified from HTTP/TLS alone.",
             "Exposed versions are inventory evidence, not proof that a CVE is exploitable.",
@@ -226,6 +383,18 @@ def collect_host_recon(
     )
     if passive_subdomains:
         recon["certificate_transparency"] = collect_certificate_transparency(domain, timeout)
+        discovered = sorted(
+            set(recon["certificate_subdomains"])
+            | set(recon["certificate_transparency"].get("subdomains", []))
+        )
+        if resolve_subdomains:
+            recon["resolved_subdomains"] = resolve_subdomain_hosts(
+                discovered, max_subdomains
+            )
+    if provider_lookup:
+        recon["provider_records"] = collect_provider_records(
+            recon["dns"].get("addresses", []), timeout
+        )
     return recon
 
 

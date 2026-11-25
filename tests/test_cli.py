@@ -16,6 +16,39 @@ class CliTests(unittest.TestCase):
         self.assertTrue(config.port_scan)
         self.assertFalse(config.web_scan)
         self.assertFalse(config.passive_subdomains)
+        self.assertFalse(config.dns_wordlist_subdomains)
+        configure_scan_type(config, "subdomains")
+        self.assertFalse(config.passive_subdomains)
+        subdomain_config = create_config(
+            "https://example.com", "Example", "self-owned", allow_subdomains=True
+        )
+        configure_scan_type(subdomain_config, "subdomains")
+        self.assertTrue(subdomain_config.passive_subdomains)
+        self.assertTrue(subdomain_config.dns_wordlist_subdomains)
+
+    def test_nmap_configuration_round_trip(self) -> None:
+        config = create_config("https://example.com", "Example", "self-owned")
+        config.port_scan = True
+        config.port_scan_engine = "nmap"
+        config.nmap_profile = "safe-services"
+
+        loaded = type(config).from_dict(config.to_dict())
+
+        self.assertEqual(loaded.port_scan_engine, "nmap")
+        self.assertEqual(loaded.nmap_profile, "safe-services")
+
+    def test_nmap_scan_requires_explicit_confirmation(self) -> None:
+        config = create_config("https://example.com", "Example", "self-owned")
+        config.port_scan = True
+        config.web_scan = False
+        config.port_scan_engine = "nmap"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps(config.to_dict()), encoding="utf-8")
+
+            result = run(["scan", "--config", str(path)])
+
+        self.assertEqual(result, 2)
 
     def test_www_subdomain_scope_uses_parent_domain(self) -> None:
         config = create_config(

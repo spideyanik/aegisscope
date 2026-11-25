@@ -2,8 +2,6 @@
 
 ![AegisScope logo](assets/aegisscope-logo.svg)
 
-**Made by SpideyAnon**
-
 AegisScope is a Linux-only, scope-enforced web security assessment CLI for websites you own or have explicit permission to test. Arch Linux is the primary supported platform. It inventories DNS, TLS, certificate subdomains, linked hosts, and technology evidence; crawls authorized pages; performs passive security checks; optionally runs non-destructive GET-parameter canaries; and generates evidence-focused reports.
 
 > Use AegisScope only under current written authorization. A successful scan does not prove an application is secure, and every finding requires human verification.
@@ -16,11 +14,13 @@ AegisScope is a Linux-only, scope-enforced web security assessment CLI for websi
 - Request-rate, page, response-size, and total-request limits
 - Same-scope HTML crawling with GET-form inventory and no POST submission
 - DNS addresses and TLS certificate inventory
-- Passive subdomain discovery from certificate names and page links
-- Certificate Transparency discovery with Cert Spotter and crt.sh fallback
+- Multi-source subdomain discovery using certificate SANs, Cert Spotter, crt.sh, AlienVault OTX, and HackerTarget
+- Bounded common-name DNS discovery with wildcard-DNS detection
 - Bounded DNS resolution for discovered subdomains
+- Complete fully qualified subdomain-name lists in terminal, JSON, and Markdown output
 - Passive RDAP network and hosting-provider details
 - Bounded common TCP-port exposure scanning without service exploitation
+- Optional scope-controlled Nmap service inventory with allowlisted safe NSE profiles
 - Safe raw response-header inventory in JSON and Markdown reports
 - Server, framework, version, and low-confidence OS evidence
 - Security header, cookie, mixed-content, and password-form checks
@@ -30,7 +30,7 @@ AegisScope is a Linux-only, scope-enforced web security assessment CLI for websi
 - Verification labels separating confirmed, likely, review-required, and informational results
 - Environment-variable expansion for authentication headers
 
-AegisScope does not perform denial of service, password attacks, data extraction, persistence, malware delivery, file writes, or automatic exploitation.
+AegisScope does not perform denial of service, password attacks, data extraction, persistence, malware delivery, target-side file writes, or automatic exploitation.
 
 ## Install
 
@@ -38,10 +38,12 @@ Linux and Python 3.11 or newer are required. Windows and macOS are intentionally
 
 On Arch Linux and Arch-based distributions:
 
+The installation and use instructions are for users who already have written authorization under the proprietary license.
+
 ```bash
-sudo pacman -S --needed python python-pipx git
+sudo pacman -S --needed python python-pipx git nmap
 pipx ensurepath
-pipx install git+https://github.com/OWNER/aegisscope.git
+pipx install git+https://github.com/spideyanik/aegisscope.git
 ```
 
 Start a URL-first assessment:
@@ -60,7 +62,7 @@ Every command launch displays the AegisScope terminal shield and project attribu
 For local development:
 
 ```bash
-git clone https://github.com/OWNER/aegisscope.git
+git clone https://github.com/spideyanik/aegisscope.git
 cd aegisscope
 python -m venv .venv
 . .venv/bin/activate
@@ -86,7 +88,7 @@ After defining or loading an authorized target, choose a scan type:
 - Host and provider scan: DNS, IP addresses, TLS, HTTP technology, and RDAP provider details
 - Subdomain scan: Certificate Transparency names and bounded DNS resolution
 - Web vulnerability scan: safe crawling and the selected web assessment profile
-- Common-port exposure scan: bounded TCP connection checks without exploitation
+- Common-port exposure scan: bounded built-in TCP checks or controlled Nmap service inventory
 - Full authorized scan: host, provider, subdomain, port, and web modules
 
 Web and full scans then offer these profiles:
@@ -108,7 +110,7 @@ Every scan requires the configured owner authorization code. Active web profiles
 
 AegisScope reports observed IP addresses, TLS protocol and certificate metadata, certificate subdomains, linked subdomains, HTTP technology headers, HTML framework markers, and exposed versions. It does not scan a discovered host unless the scope configuration permits it.
 
-Certificate Transparency discovery sends the registrable domain, but no credentials or page content, to Cert Spotter or the crt.sh fallback. Set `"passive_subdomains": false` in the configuration to disable third-party lookups.
+Passive subdomain discovery sends the registrable domain, but no credentials or page content, to Cert Spotter, crt.sh, AlienVault OTX, and HackerTarget. Set `"passive_subdomains": false` in the configuration to disable third-party lookups. The subdomain and full scan types also perform a bounded DNS wordlist sweep, filter wildcard-only results, and cap DNS resolution using `max_subdomains`.
 
 An HTTP banner cannot reliably identify the server operating system, patch level, or exploitable CVEs. OS values are therefore labeled as low-confidence hints. Exposed software versions are evidence for manual advisory review, not proof of vulnerability.
 
@@ -174,6 +176,36 @@ aegisscope scan --config aegisscope.json --output-dir reports \
 
 Available profile names are `passive`, `injection`, `redirect`, and `full-safe`.
 
+## Nmap safe profiles
+
+Nmap integration does not accept raw flags or script names. AegisScope constructs the command from the authorized target hostname, the configured port allowlist, bounded rate/retry/time limits, and one approved profile:
+
+- `inventory`: TCP connect scan with light service/version detection
+- `web-tls`: inventory plus `http-headers`, `http-security-headers`, and `ssl-cert`
+- `safe-services`: web/TLS checks plus allowlisted banner, DNS recursion, RDP encryption, SMB protocol/signing, SMTP command, and SSH host-key checks
+
+All profiles use non-root TCP connect scanning (`-sT`), no host discovery expansion (`-Pn`), no reverse DNS (`-n`), open-port filtering, XML evidence output, and the configured `common_ports`. Brute-force, denial-of-service, exploit, fuzzer, intrusive, spoofing, evasion, raw-argument, and user-supplied NSE execution are not exposed.
+
+Run a controlled Nmap assessment:
+
+```bash
+aegisscope scan --config aegisscope.json --scan-type ports \
+  --nmap-profile safe-services --confirm-authorization
+```
+
+Persistent configuration is available under `network_scan`:
+
+```json
+{
+  "engine": "nmap",
+  "nmap_profile": "safe-services",
+  "nmap_timeout_seconds": 180,
+  "nmap_max_rate": 100
+}
+```
+
+Nmap output is imported into the JSON and Markdown evidence reports. Service versions and NSE output are inventory evidence and do not by themselves prove a vulnerability.
+
 ## Safe testing
 
 Run the unit tests before changing scanner behavior:
@@ -196,4 +228,4 @@ Use intentionally vulnerable local applications such as OWASP Juice Shop or WebG
 
 ## License
 
-Proprietary. Copyright 2026 SpideyAnon. Access and use require prior written authorization. See `LICENSE`.
+Proprietary. Copyright 2026 AegisScope Project. Public visibility grants permission to view the source for evaluation only; use and modification require prior written authorization. See `LICENSE`.

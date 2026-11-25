@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from .nmap_runner import NMAP_PROFILES
 from .scope import ScopeError, ScopePolicy, normalize_url
 
 
@@ -56,8 +57,13 @@ class ScanConfig:
     passive_subdomains: bool = True
     provider_lookup: bool = True
     resolve_subdomains: bool = True
+    dns_wordlist_subdomains: bool = False
     web_scan: bool = True
     port_scan: bool = False
+    port_scan_engine: str = "builtin"
+    nmap_profile: str = "inventory"
+    nmap_timeout_seconds: int = 180
+    nmap_max_rate: int = 100
     common_ports: list[int] = field(default_factory=lambda: list(DEFAULT_COMMON_PORTS))
     port_timeout_seconds: float = 1.0
     max_subdomains: int = 100
@@ -66,7 +72,7 @@ class ScanConfig:
     requests_per_second: float = 2.0
     timeout_seconds: float = 10.0
     max_response_bytes: int = 2_000_000
-    user_agent: str = "AegisScope/0.3.0 authorized-security-assessment"
+    user_agent: str = "AegisScope/0.3.1 authorized-security-assessment"
     headers: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -101,6 +107,14 @@ class ScanConfig:
             raise ValueError("max_response_bytes must be between 1024 and 10000000")
         if not 0.1 <= self.port_timeout_seconds <= 5:
             raise ValueError("port_timeout_seconds must be between 0.1 and 5")
+        if self.port_scan_engine not in {"builtin", "nmap"}:
+            raise ValueError("port_scan_engine must be 'builtin' or 'nmap'")
+        if self.nmap_profile not in NMAP_PROFILES:
+            raise ValueError(f"nmap_profile must be one of: {', '.join(NMAP_PROFILES)}")
+        if not 30 <= self.nmap_timeout_seconds <= 1_800:
+            raise ValueError("nmap_timeout_seconds must be between 30 and 1800")
+        if not 1 <= self.nmap_max_rate <= 1_000:
+            raise ValueError("nmap_max_rate must be between 1 and 1000")
         if not 1 <= self.max_subdomains <= 500:
             raise ValueError("max_subdomains must be between 1 and 500")
         if not 1 <= len(self.common_ports) <= 100:
@@ -136,12 +150,17 @@ class ScanConfig:
             "modules": {
                 "provider_lookup": self.provider_lookup,
                 "resolve_subdomains": self.resolve_subdomains,
+                "dns_wordlist_subdomains": self.dns_wordlist_subdomains,
                 "web_scan": self.web_scan,
                 "port_scan": self.port_scan,
             },
             "network_scan": {
                 "common_ports": self.common_ports,
                 "port_timeout_seconds": self.port_timeout_seconds,
+                "engine": self.port_scan_engine,
+                "nmap_profile": self.nmap_profile,
+                "nmap_timeout_seconds": self.nmap_timeout_seconds,
+                "nmap_max_rate": self.nmap_max_rate,
                 "max_subdomains": self.max_subdomains,
             },
             "limits": {
@@ -173,8 +192,15 @@ class ScanConfig:
             passive_subdomains=bool(data.get("passive_subdomains", True)),
             provider_lookup=bool(modules.get("provider_lookup", True)),
             resolve_subdomains=bool(modules.get("resolve_subdomains", True)),
+            dns_wordlist_subdomains=bool(
+                modules.get("dns_wordlist_subdomains", False)
+            ),
             web_scan=bool(modules.get("web_scan", True)),
             port_scan=bool(modules.get("port_scan", False)),
+            port_scan_engine=str(network_scan.get("engine", "builtin")),
+            nmap_profile=str(network_scan.get("nmap_profile", "inventory")),
+            nmap_timeout_seconds=int(network_scan.get("nmap_timeout_seconds", 180)),
+            nmap_max_rate=int(network_scan.get("nmap_max_rate", 100)),
             common_ports=[
                 int(port)
                 for port in network_scan.get("common_ports", DEFAULT_COMMON_PORTS)
@@ -187,7 +213,7 @@ class ScanConfig:
             timeout_seconds=float(limits.get("timeout_seconds", 10.0)),
             max_response_bytes=int(limits.get("max_response_bytes", 2_000_000)),
             user_agent=data.get(
-                "user_agent", "AegisScope/0.3.0 authorized-security-assessment"
+                "user_agent", "AegisScope/0.3.1 authorized-security-assessment"
             ),
             headers=dict(data.get("headers", {})),
         )

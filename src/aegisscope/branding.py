@@ -27,4 +27,4 @@ def print_banner() -> None:
     violet = "\033[1;35m" if color else ""
     reset = "\033[0m" if color else ""
     print(f"{cyan}{LOGO}{reset}")
-    print(f"{violet}AegisScope v{__version__} | Made by SpideyAnon{reset}\n")
+    print(f"{violet}AegisScope v{__version__} | Authorized use only{reset}\n")

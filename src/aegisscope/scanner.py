@@ -14,6 +14,7 @@ import httpx
 from .checks import check_response, detect_new_sql_error, parse_page
 from .config import ScanConfig
 from .models import Finding, ScanResult
+from .nmap_runner import run_nmap_scan
 from .recon import (
     collect_host_recon,
     fingerprint_http,
@@ -151,20 +152,20 @@ class Scanner:
         self.active = bool(self.probes)
         self.audit = AuditLog(audit_path)
         self.result = ScanResult(
-            target=config.target,
+            target=redacted_url(config.target),
             started_at=utc_now(),
             profile=profile,
             modules=[
                 name
                 for name, enabled in (
                     ("host", config.reconnaissance),
-                    ("subdomains", config.passive_subdomains),
+                    ("subdomains", config.allow_subdomains and config.passive_subdomains),
                     ("web", config.web_scan),
                     ("ports", config.port_scan),
                 )
                 if enabled
             ],
-            active_probes_used=self.active,
+            active_probes_used=False,
         )
         headers = {"User-Agent": config.user_agent, **config.resolved_headers()}
         self.client = httpx.Client(
@@ -208,6 +209,8 @@ class Scanner:
         )
         self.result.stats.requests_sent += 1
         self._last_request_at = time.monotonic()
+        if purpose.endswith("-canary"):
+            self.result.active_probes_used = True
 
         with self.client.stream("GET", normalized) as response:
             chunks = bytearray()
@@ -410,13 +413,13 @@ class Scanner:
 
     def run(self) -> ScanResult:
         queue: deque[str] = deque([self.config.target])
+        probe_queue: deque[str] = deque()
         queued = {self.config.target}
         visited: set[str] = set()
         self.audit.write(
             "scan_started",
             target=redacted_url(self.config.target),
-            authorization_owner=self.config.authorization_owner,
-            authorization_reference=self.config.authorization_reference,
+            authorization="owner-code-verified",
             active=self.active,
             profile=self.profile,
             modules=self.result.modules,
@@ -425,9 +428,10 @@ class Scanner:
             self.result.reconnaissance = collect_host_recon(
                 self.config.target,
                 self.config.timeout_seconds,
-                self.config.passive_subdomains,
+                self.config.allow_subdomains and self.config.passive_subdomains,
                 self.config.provider_lookup,
-                self.config.resolve_subdomains,
+                self.config.allow_subdomains and self.config.resolve_subdomains,
+                self.config.allow_subdomains and self.config.dns_wordlist_subdomains,
                 self.config.max_subdomains,
             )
             expires_in = self.result.reconnaissance.get("tls", {}).get("expires_in_days")
@@ -448,17 +452,29 @@ class Scanner:
                 )
         if self.config.port_scan:
             hostname = urlsplit(self.config.target).hostname or ""
-            port_results = scan_common_ports(
-                hostname,
-                self.config.common_ports,
-                self.config.port_timeout_seconds,
-            )
+            if self.config.port_scan_engine == "nmap":
+                port_results = run_nmap_scan(
+                    hostname,
+                    self.config.common_ports,
+                    self.config.nmap_profile,
+                    self.config.nmap_timeout_seconds,
+                    self.config.nmap_max_rate,
+                )
+            else:
+                port_results = scan_common_ports(
+                    hostname,
+                    self.config.common_ports,
+                    self.config.port_timeout_seconds,
+                )
             self.result.reconnaissance["port_scan"] = port_results
             self.audit.write(
                 "port_scan_completed",
                 host=hostname,
+                engine=port_results.get("engine", "builtin"),
+                profile=port_results.get("profile"),
                 scanned_ports=len(self.config.common_ports),
                 open_ports=[item["port"] for item in port_results["open_ports"]],
+                error=port_results.get("error"),
             )
             for item in port_results["open_ports"]:
                 if item["port"] not in REVIEW_PORTS:
@@ -495,8 +511,8 @@ class Scanner:
                     self._add_error(self.config.target, error)
             return self._complete_result(0)
 
-        while queue and len(visited) < self.config.max_pages:
-            url = queue.popleft()
+        while (probe_queue or queue) and len(visited) < self.config.max_pages:
+            url = probe_queue.popleft() if probe_queue else queue.popleft()
             if url in visited:
                 continue
             visited.add(url)
@@ -529,7 +545,7 @@ class Scanner:
                         normalized_form = normalize_url(form_url)
                         if normalized_form not in queued:
                             queued.add(normalized_form)
-                            queue.append(normalized_form)
+                            probe_queue.append(normalized_form)
                 for link in sorted(parser.links):
                     try:
                         normalized = normalize_url(link)
@@ -549,7 +565,10 @@ class Scanner:
                         continue
                     if normalized not in queued:
                         queued.add(normalized)
-                        queue.append(normalized)
+                        if self.active and urlsplit(normalized).query:
+                            probe_queue.append(normalized)
+                        else:
+                            queue.append(normalized)
 
             location = response.headers.get("location")
             if location:
@@ -559,7 +578,10 @@ class Scanner:
                     redirect = ""
                 if redirect and self.scope.is_allowed(redirect) and redirect not in queued:
                     queued.add(redirect)
-                    queue.append(redirect)
+                    if self.active and urlsplit(redirect).query:
+                        probe_queue.append(redirect)
+                    else:
+                        queue.append(redirect)
                 elif redirect:
                     self.result.stats.blocked_urls += 1
 

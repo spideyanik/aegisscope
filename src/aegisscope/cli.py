@@ -10,6 +10,7 @@ from . import __version__
 from .authorization import require_owner_authorization, setup_owner_policy
 from .branding import print_banner
 from .config import ScanConfig, create_config, load_config
+from .nmap_runner import NMAP_PROFILES
 from .report import write_reports
 from .scanner import ASSESSMENT_PROFILES, Scanner
 
@@ -60,6 +61,8 @@ def build_parser() -> argparse.ArgumentParser:
     guided_parser.add_argument("--config", default="aegisscope.json")
     guided_parser.add_argument("--output-dir", default="reports")
     guided_parser.add_argument("--scan-type", choices=SCAN_TYPES)
+    guided_parser.add_argument("--nmap-profile", choices=tuple(NMAP_PROFILES))
+    guided_parser.add_argument("--confirm-authorization", action="store_true")
 
     assess_parser = commands.add_parser(
         "assess", help="assess one authorized URL without creating a configuration"
@@ -73,11 +76,18 @@ def build_parser() -> argparse.ArgumentParser:
     assess_parser.add_argument(
         "--allow-subdomains", action="store_true", help="allow crawling discovered subdomains"
     )
+    assess_parser.add_argument("--nmap-profile", choices=tuple(NMAP_PROFILES))
+    assess_parser.add_argument("--confirm-authorization", action="store_true")
 
     scan_parser = commands.add_parser("scan", help="run an authorized assessment")
     scan_parser.add_argument("--config", default="aegisscope.json")
     scan_parser.add_argument("--output-dir", default="reports")
     scan_parser.add_argument("--scan-type", choices=SCAN_TYPES)
+    scan_parser.add_argument(
+        "--nmap-profile",
+        choices=tuple(NMAP_PROFILES),
+        help="use the controlled Nmap engine with an approved profile",
+    )
     scan_parser.add_argument(
         "--profile",
         choices=tuple(ASSESSMENT_PROFILES),
@@ -120,10 +130,12 @@ def choose_scan_type(choice: str) -> str:
 
 
 def configure_scan_type(config: ScanConfig, scan_type: str) -> None:
+    subdomain_scan = scan_type in {"subdomains", "full"} and config.allow_subdomains
     config.reconnaissance = True
     config.provider_lookup = scan_type in {"host", "subdomains", "full"}
-    config.passive_subdomains = scan_type in {"subdomains", "full"}
-    config.resolve_subdomains = scan_type in {"subdomains", "full"}
+    config.passive_subdomains = subdomain_scan
+    config.resolve_subdomains = subdomain_scan
+    config.dns_wordlist_subdomains = subdomain_scan
     config.web_scan = scan_type in {"web", "full"}
     config.port_scan = scan_type in {"ports", "full"}
 
@@ -171,6 +183,7 @@ def execute_scan(config: ScanConfig, output_dir: str | Path, profile: str) -> in
             for item in recon.get("technologies", [])
         ]
         ct = recon.get("certificate_transparency", {})
+        subdomain_discovery = recon.get("subdomain_discovery", {})
         open_ports = recon.get("port_scan", {}).get("open_ports", [])
         print("\nDiscovered inventory:")
         print(f"  Host: {recon.get('hostname', 'unknown')}")
@@ -179,8 +192,16 @@ def execute_scan(config: ScanConfig, output_dir: str | Path, profile: str) -> in
         print(f"  TLS: {recon.get('tls', {}).get('protocol', 'not observed')}")
         print(f"  Technologies: {', '.join(technologies) or 'none fingerprinted'}")
         print(f"  Observed headers: {len(recon.get('observed_headers', {}))}")
-        print(f"  CT subdomains: {len(ct.get('subdomains', []))}")
+        print(
+            "  Subdomain candidates: "
+            f"{subdomain_discovery.get('candidate_count', len(ct.get('subdomains', [])))}"
+        )
         print(f"  Resolved subdomains: {len(recon.get('resolved_subdomains', []))}")
+        discovered_names = subdomain_discovery.get("discovered_names", [])
+        if discovered_names:
+            print("  Discovered subdomain names:")
+            for hostname in discovered_names:
+                print(f"    - {hostname}")
         print(
             "  Open common ports: "
             + (
@@ -203,6 +224,8 @@ def run_guided(
     config_path: str | Path,
     output_dir: str | Path,
     requested_scan_type: str | None = None,
+    nmap_profile: str | None = None,
+    confirm_authorization: bool = False,
 ) -> int:
     path = Path(config_path)
     print("AegisScope guided ethical web assessment")
@@ -213,15 +236,25 @@ def run_guided(
         print(f"Loaded target: {config.target}")
     else:
         target = prompt_required("Authorized target URL: ")
-        owner = prompt_required("Authorization owner: ")
-        reference = prompt_required("Authorization reference: ")
         try:
             subdomains = input("Include subdomains? [y/N]: ").strip().lower() == "y"
         except EOFError as error:
             raise ValueError("interactive input ended unexpectedly") from error
-        config = create_config(target, owner, reference, subdomains)
+        config = create_config(
+            target,
+            "private-owner",
+            "owner-approved-scope",
+            subdomains,
+        )
     scan_type = requested_scan_type or prompt_scan_type()
     configure_scan_type(config, scan_type)
+    if nmap_profile:
+        if not config.port_scan:
+            raise ValueError("an Nmap profile requires scan type 'ports' or 'full'")
+        config.port_scan_engine = "nmap"
+        config.nmap_profile = nmap_profile
+    if config.port_scan and config.port_scan_engine == "nmap" and not confirm_authorization:
+        raise ValueError("Nmap scans require --confirm-authorization")
     if created:
         path.write_text(json.dumps(config.to_dict(), indent=2) + "\n", encoding="utf-8")
         print(f"Created {path}")
@@ -254,6 +287,17 @@ def run_url_assessment(args: argparse.Namespace) -> int:
         args.allow_subdomains,
     )
     configure_scan_type(config, scan_type)
+    if args.nmap_profile:
+        if not config.port_scan:
+            raise ValueError("an Nmap profile requires scan type 'ports' or 'full'")
+        config.port_scan_engine = "nmap"
+        config.nmap_profile = args.nmap_profile
+    if (
+        config.port_scan
+        and config.port_scan_engine == "nmap"
+        and not args.confirm_authorization
+    ):
+        raise ValueError("Nmap scans require --confirm-authorization")
     if ASSESSMENT_PROFILES[profile] and not config.web_scan:
         raise ValueError("active web profiles require scan type 'web' or 'full'")
     config.active_probes = bool(ASSESSMENT_PROFILES[profile])
@@ -277,6 +321,8 @@ def run(argv: list[str] | None = None) -> int:
                 getattr(args, "config", "aegisscope.json"),
                 getattr(args, "output_dir", "reports"),
                 getattr(args, "scan_type", None),
+                getattr(args, "nmap_profile", None),
+                getattr(args, "confirm_authorization", False),
             )
 
         if args.command == "init":
@@ -305,6 +351,11 @@ def run(argv: list[str] | None = None) -> int:
         profile = "full-safe" if args.active else args.profile
         if args.scan_type:
             configure_scan_type(config, args.scan_type)
+        if args.nmap_profile:
+            if not config.port_scan:
+                raise ValueError("an Nmap profile requires scan type 'ports' or 'full'")
+            config.port_scan_engine = "nmap"
+            config.nmap_profile = args.nmap_profile
         if args.active and args.profile != "passive":
             raise ValueError("use either --active or --profile, not both")
         if ASSESSMENT_PROFILES[profile] and not args.confirm_authorization:
@@ -313,6 +364,12 @@ def run(argv: list[str] | None = None) -> int:
             raise ValueError('set "active_probes": true in the reviewed configuration first')
         if ASSESSMENT_PROFILES[profile] and not config.web_scan:
             raise ValueError("active web profiles require scan type 'web' or 'full'")
+        if (
+            config.port_scan
+            and config.port_scan_engine == "nmap"
+            and not args.confirm_authorization
+        ):
+            raise ValueError("Nmap scans require --confirm-authorization")
 
         return execute_scan(config, args.output_dir, profile)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:

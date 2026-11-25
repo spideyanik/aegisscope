@@ -57,10 +57,12 @@ def write_reports(result: ScanResult, output_dir: str | Path) -> tuple[Path, Pat
         dns = recon.get("dns", {})
         tls = recon.get("tls", {})
         certificate_transparency = recon.get("certificate_transparency", {})
+        subdomain_discovery = recon.get("subdomain_discovery", {})
         ct_subdomains = certificate_transparency.get("subdomains", [])
         certificate_subdomains = recon.get("certificate_subdomains", [])
         linked_hosts = sorted(recon.get("linked_hosts", []))
         resolved_subdomains = recon.get("resolved_subdomains", [])
+        discovered_names = subdomain_discovery.get("discovered_names", [])
         lines.extend(
             [
                 "## Reconnaissance",
@@ -83,19 +85,51 @@ def write_reports(result: ScanResult, output_dir: str | Path) -> tuple[Path, Pat
                 f"- Certificate Transparency subdomains: `{', '.join(ct_subdomains[:100]) or 'none observed'}`",
                 f"- Certificate Transparency result count: `{len(ct_subdomains)}`",
                 f"- Certificate Transparency error: `{certificate_transparency.get('error') or 'none'}`",
+                f"- Combined subdomain candidates: `{subdomain_discovery.get('candidate_count', len(ct_subdomains))}`",
+                f"- Discovered subdomain names: `{len(discovered_names)}`",
+                f"- DNS wordlist enabled: `{'yes' if subdomain_discovery.get('dns_wordlist_enabled') else 'no'}`",
+                f"- DNS wordlist size: `{subdomain_discovery.get('dns_wordlist_size', 0)}`",
+                f"- Wildcard DNS addresses: `{', '.join(subdomain_discovery.get('wildcard_addresses', [])) or 'none detected'}`",
+                f"- Wildcard-only names filtered: `{len(subdomain_discovery.get('wildcard_filtered', []))}`",
                 f"- Linked subdomains: `{', '.join(linked_hosts[:100]) or 'none observed'}`",
                 f"- DNS-resolved subdomains: `{len(resolved_subdomains)}`",
                 f"- Discovered GET forms: `{len(recon.get('discovered_get_forms', []))}`",
                 "",
-                "### Resolved Subdomains",
+                "### Discovery Sources",
                 "",
             ]
         )
+        passive_sources = subdomain_discovery.get("passive_sources", [])
+        if passive_sources:
+            lines.extend(
+                [
+                    "| Discovery source | Names | Error |",
+                    "|---|---:|---|",
+                ]
+            )
+            for source in passive_sources:
+                lines.append(
+                    f"| {source['name']} | {source['count']} | {source.get('error') or 'none'} |"
+                )
+            lines.append("")
+        lines.extend(["### Complete Discovered Subdomain List", ""])
+        if discovered_names:
+            lines.extend(f"- `{hostname}`" for hostname in discovered_names)
+        else:
+            lines.append("No subdomain name was observed or DNS-confirmed within scope.")
+        lines.extend(["", "### Resolved Subdomains", ""])
         if resolved_subdomains:
-            lines.extend(["| Hostname | Addresses |", "|---|---|"])
+            lines.extend(
+                [
+                    "| Hostname | Addresses | Sources | Wildcard match |",
+                    "|---|---|---|---|",
+                ]
+            )
             for item in resolved_subdomains[:100]:
                 lines.append(
-                    f"| `{item['hostname']}` | `{', '.join(item['addresses'])}` |"
+                    f"| `{item['hostname']}` | `{', '.join(item['addresses'])}` | "
+                    f"`{', '.join(item.get('sources', [])) or 'unknown'}` | "
+                    f"`{'yes' if item.get('wildcard_match') else 'no'}` |"
                 )
         else:
             lines.append("No discovered subdomain resolved within the configured limit.")
@@ -118,19 +152,48 @@ def write_reports(result: ScanResult, output_dir: str | Path) -> tuple[Path, Pat
         else:
             lines.append("Provider lookup was disabled or no address was available.")
 
-        lines.extend(["", "### Common TCP Ports", ""])
+        lines.extend(["", "### Network Port Scan", ""])
         port_scan = recon.get("port_scan")
         if port_scan:
+            lines.extend(
+                [
+                    f"- Engine: `{port_scan.get('engine', 'builtin')}`",
+                    f"- Profile: `{port_scan.get('profile') or 'TCP connect inventory'}`",
+                    f"- Host status: `{port_scan.get('host_status', 'not reported')}`",
+                    f"- Error: `{port_scan.get('error') or 'none'}`",
+                    "",
+                ]
+            )
             lines.append(
                 f"Scanned `{len(port_scan.get('scanned_ports', []))}` bounded TCP ports on `{port_scan.get('hostname', '')}`."
             )
             open_ports = port_scan.get("open_ports", [])
             if open_ports:
-                lines.extend(["", "| Port | Service |", "|---:|---|"])
+                lines.extend(
+                    [
+                        "",
+                        "| Port | Service | Version evidence | Reason |",
+                        "|---:|---|---|---|",
+                    ]
+                )
                 for item in open_ports:
-                    lines.append(f"| {item['port']} | {item['service']} |")
+                    version = str(item.get("version") or "not identified").replace("|", "\\|")
+                    lines.append(
+                        f"| {item['port']} | {item['service']} | {version} | {item.get('reason', 'not reported')} |"
+                    )
+                    for script in item.get("scripts", []):
+                        output = str(script.get("output", "")).replace("|", "\\|").replace("\n", " ")
+                        lines.append(
+                            f"|  | NSE `{script.get('id', 'unknown')}` | {output or 'no output'} |  |"
+                        )
             else:
                 lines.extend(["", "No configured TCP port accepted a connection."])
+            host_scripts = port_scan.get("host_scripts", [])
+            if host_scripts:
+                lines.extend(["", "Host-level Nmap script evidence:", ""])
+                for script in host_scripts:
+                    output = str(script.get("output", "")).replace("|", "\\|").replace("\n", " ")
+                    lines.append(f"- `{script.get('id', 'unknown')}`: {output}")
             lines.extend(["", port_scan.get("note", ""), ""])
         else:
             lines.extend(["Port scanning was not selected.", ""])

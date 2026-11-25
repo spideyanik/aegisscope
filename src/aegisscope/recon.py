@@ -12,6 +12,8 @@ from urllib.parse import urlsplit
 import httpx
 import tldextract
 
+from .subdomains import discover_subdomains, parse_certificate_entries
+
 
 PRODUCT_VERSION = re.compile(
     r"(?P<product>[A-Za-z][A-Za-z0-9._+-]{1,40})[/ ](?P<version>\d+(?:\.\d+){1,4}(?:[-._A-Za-z0-9]+)?)"
@@ -105,23 +107,7 @@ def is_related_subdomain(candidate: str, hostname: str) -> bool:
 
 
 def parse_ct_entries(entries: object, domain: str) -> list[str]:
-    if not isinstance(entries, list):
-        return []
-    discovered: set[str] = set()
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        dns_names = entry.get("dns_names")
-        values = (
-            [str(value) for value in dns_names]
-            if isinstance(dns_names, list)
-            else str(entry.get("name_value", "")).splitlines()
-        )
-        for value in values:
-            hostname = value.strip().lower().lstrip("*.").rstrip(".")
-            if hostname and hostname != domain and hostname.endswith(f".{domain}"):
-                discovered.add(hostname)
-    return sorted(discovered)
+    return parse_certificate_entries(entries, domain)
 
 
 def collect_certificate_transparency(domain: str, timeout: float) -> dict[str, Any]:
@@ -140,7 +126,7 @@ def collect_certificate_transparency(domain: str, timeout: float) -> dict[str, A
                 "include_subdomains": "true",
                 "expand": "dns_names",
             },
-            headers={"User-Agent": "AegisScope/0.3.0 passive-certificate-discovery"},
+            headers={"User-Agent": "AegisScope/0.3.1 passive-certificate-discovery"},
             timeout=timeout,
             follow_redirects=True,
         )
@@ -155,7 +141,7 @@ def collect_certificate_transparency(domain: str, timeout: float) -> dict[str, A
         response = httpx.get(
             "https://crt.sh/",
             params={"q": f"%.{domain}", "output": "json"},
-            headers={"User-Agent": "AegisScope/0.3.0 passive-certificate-discovery"},
+            headers={"User-Agent": "AegisScope/0.3.1 passive-certificate-discovery"},
             timeout=max(timeout, 30),
             follow_redirects=True,
         )
@@ -228,7 +214,7 @@ def collect_provider_records(addresses: list[str], timeout: float) -> list[dict[
         try:
             response = httpx.get(
                 f"https://rdap.org/ip/{address}",
-                headers={"User-Agent": "AegisScope/0.3.0 passive-provider-lookup"},
+                headers={"User-Agent": "AegisScope/0.3.1 passive-provider-lookup"},
                 timeout=timeout,
                 follow_redirects=True,
             )
@@ -343,6 +329,7 @@ def collect_host_recon(
     passive_subdomains: bool = True,
     provider_lookup: bool = True,
     resolve_subdomains: bool = True,
+    dns_wordlist_subdomains: bool = False,
     max_subdomains: int = 100,
 ) -> dict[str, Any]:
     parts = urlsplit(url)
@@ -367,6 +354,7 @@ def collect_host_recon(
         "observed_headers": {},
         "provider_records": [],
         "resolved_subdomains": [],
+        "subdomain_discovery": {},
         "limitations": [
             "Operating systems and patch levels cannot be reliably identified from HTTP/TLS alone.",
             "Exposed versions are inventory evidence, not proof that a CVE is exploitable.",
@@ -381,16 +369,33 @@ def collect_host_recon(
             if is_related_subdomain(name, hostname)
         }
     )
-    if passive_subdomains:
-        recon["certificate_transparency"] = collect_certificate_transparency(domain, timeout)
-        discovered = sorted(
-            set(recon["certificate_subdomains"])
-            | set(recon["certificate_transparency"].get("subdomains", []))
+    if passive_subdomains or dns_wordlist_subdomains:
+        discovery = discover_subdomains(
+            domain,
+            timeout,
+            max_subdomains if resolve_subdomains else 0,
+            dns_wordlist_subdomains,
+            tls_names,
+            passive_subdomains,
         )
-        if resolve_subdomains:
-            recon["resolved_subdomains"] = resolve_subdomain_hosts(
-                discovered, max_subdomains
-            )
+        recon["subdomain_discovery"] = discovery
+        recon["resolved_subdomains"] = discovery["resolved"]
+        passive_candidates = [
+            item["hostname"]
+            for item in discovery["candidates"]
+            if any(source != "DNS wordlist" for source in item["sources"])
+        ]
+        source_errors = [
+            f"{item['name']}: {item['error']}"
+            for item in discovery["passive_sources"]
+            if item["error"]
+        ]
+        recon["certificate_transparency"] = {
+            "domain": domain,
+            "subdomains": passive_candidates,
+            "source": "multi-source passive discovery",
+            "error": "; ".join(source_errors) or None,
+        }
     if provider_lookup:
         recon["provider_records"] = collect_provider_records(
             recon["dns"].get("addresses", []), timeout

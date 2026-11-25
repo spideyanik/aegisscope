@@ -47,8 +47,8 @@ class ReconTests(unittest.TestCase):
 
     def test_registrable_domain_handles_multi_level_suffix(self) -> None:
         self.assertEqual(
-            registrable_domain("www.brainwareuniversity.ac.in"),
-            "brainwareuniversity.ac.in",
+            registrable_domain("www.example.ac.in"),
+            "example.ac.in",
         )
 
     def test_certificate_transparency_entries_are_normalized(self) -> None:
